@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "AI-Powered Interactive YouTube Learning Assistant",
+  "version": "1.0.0",
+  "description": "Transforms passive YouTube watching into active learning with intelligent breakpoints, transcript-grounded AI activities, prediction challenges, and adaptive spaced repetition.",
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://*.youtube.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "scripts": ["src/background/background.js"],
+    "service_worker": "src/background/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*"],
+      "css": ["src/styles/main.css"],
+      "js": ["src/content/loader.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/content/*.js",
+        "src/ai/*.js",
+        "src/learning/*.js",
+        "src/storage/*.js",
+        "src/styles/*.css",
+        "assets/*"
+      ],
+      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*"]
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "yt-ai-learning-assistant@example.org",
+      "strict_min_version": "115.0"
+    }
+  },
+  "icons": {
+    "48": "assets/icon.svg",
+    "96": "assets/icon.svg"
+  }
+}

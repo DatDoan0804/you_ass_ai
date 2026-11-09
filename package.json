@@ -1,0 +1,21 @@
+{
+  "name": "youtube-ai-learning-assistant",
+  "version": "1.0.0",
+  "description": "AI-Powered Interactive YouTube Learning Assistant Browser Extension (Firefox & Chromium MV3)",
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/validate.js",
+    "package": "zip -r youtube-ai-learning-assistant.zip manifest.json package.json README.md src assets"
+  },
+  "keywords": [
+    "youtube",
+    "browser-extension",
+    "firefox-addon",
+    "active-learning",
+    "gemini-ai",
+    "spaced-repetition",
+    "education"
+  ],
+  "author": "AI Learning Systems Architect",
+  "license": "MIT"
+}
