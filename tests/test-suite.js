@@ -1864,6 +1864,111 @@ This is subtitle line 2.
     assert.ok(enIndex < abIndex, 'English appears before obscure translation languages like Abkhazian');
   });
 
+  console.log('\n18. Draggable Subtitles, Gemini AI Breakpoint Planning & Universal Video Coverage');
+
+  await test('PromptBuilder.buildVideoBreakpointsAndActivitiesPrompt generates valid schema and rules', () => {
+    const promptObj = PromptBuilder.buildVideoBreakpointsAndActivitiesPrompt({
+      videoTitle: 'Test Video on Latin Language',
+      videoDuration: 620,
+      chapters: [
+        { title: 'Intro', start: 0, end: 180 },
+        { title: 'Origins', start: 180, end: 400 },
+        { title: 'Modern Examples', start: 400, end: 620 }
+      ],
+      transcriptChunks: [
+        { start: 0, end: 180, chapterTitle: 'Intro', text: 'Introduction to Latin.' },
+        { start: 180, end: 400, chapterTitle: 'Origins', text: 'Origins of Latin.' },
+        { start: 400, end: 620, chapterTitle: 'Modern Examples', text: 'Modern daily uses.' }
+      ],
+      minIntervalSeconds: 300
+    });
+
+    assert.ok(promptObj.systemPrompt.includes('MANDATORY FINAL END-OF-VIDEO SUMMARY ACTIVITY'));
+    assert.ok(promptObj.systemPrompt.includes('MINIMUM INTERVAL SPACING'));
+    assert.ok(promptObj.userPrompt.includes('Test Video on Latin Language'));
+    assert.ok(promptObj.schema === SCHEMAS.VIDEO_BREAKPOINTS_AND_ACTIVITIES);
+    assert.strictEqual(promptObj.schema.type, 'OBJECT');
+    assert.ok(promptObj.schema.properties.breakpoints);
+  });
+
+  await test('BreakpointDetector.setBreakpointsFromAi schedules checkpoints and marks final summary', () => {
+    const bd = new BreakpointDetector({ minIntervalSeconds: 300 });
+    bd.videoDuration = 600;
+
+    const aiBreakpoints = [
+      {
+        timestamp: 280,
+        milestoneTitle: 'Foundations of Latin',
+        activity: {
+          type: 'multiple_choice',
+          question: 'What is the primary origin discussed?',
+          options: ['Rome', 'Greece', 'Egypt', 'Persia'],
+          correctIndex: 0,
+          explanation: 'Latin originated in Latium, Rome.'
+        }
+      },
+      {
+        timestamp: 590,
+        milestoneTitle: 'Comprehensive Video Wrap-Up',
+        isSummary: true,
+        activity: {
+          type: 'teach_back',
+          question: 'Summarize the overarching thesis of the entire video.',
+          explanation: 'Comprehensive reflection on all sections.'
+        }
+      }
+    ];
+
+    bd.setBreakpointsFromAi(aiBreakpoints, 'testVid123');
+    const scheduled = bd.getAllScheduledBreakpoints();
+    assert.strictEqual(scheduled.length, 2);
+    assert.strictEqual(scheduled[0].timestamp, 280);
+    assert.strictEqual(scheduled[0].isSummary, false);
+    assert.strictEqual(scheduled[1].timestamp, 590);
+    assert.strictEqual(scheduled[1].isSummary, true);
+    assert.strictEqual(scheduled[1].activity.isSummary, true);
+  });
+
+  await test('UIManager.setupDraggableSubtitle attaches listeners and handles double-click reset', () => {
+    const ui = new UIManager({});
+    let dblClickTriggered = false;
+    let savedSettings = null;
+    ui.callbacks.onSaveSettings = async (settings) => {
+      savedSettings = settings;
+    };
+
+    const listeners = new Map();
+    const mockBox = {
+      classList: { add: () => {}, remove: () => {} },
+      addEventListener: (type, fn) => {
+        listeners.set(type, fn);
+      }
+    };
+
+    const mockContainer = {
+      parentElement: {
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 450 })
+      },
+      getBoundingClientRect: () => ({ left: 300, top: 350, width: 200, height: 40 }),
+      style: { left: '50%', top: '', bottom: '104px', transform: 'translateX(-50%)' },
+      dataset: {}
+    };
+
+    ui.setupDraggableSubtitle(mockContainer, mockBox);
+    assert.ok(listeners.has('mousedown'), 'Mousedown listener attached');
+    assert.ok(listeners.has('touchstart'), 'Touchstart listener attached');
+    assert.ok(listeners.has('dblclick'), 'Double-click listener attached');
+
+    // Simulate double click to reset position
+    const dblClickHandler = listeners.get('dblclick');
+    dblClickHandler({ stopPropagation: () => {}, preventDefault: () => {} });
+
+    assert.strictEqual(mockContainer.style.left, '50%');
+    assert.strictEqual(mockContainer.style.transform, 'translateX(-50%)');
+    assert.strictEqual(mockContainer.style.top, '');
+    assert.strictEqual(savedSettings?.subtitlePosition, null, 'Settings updated to reset position');
+  });
+
   console.log(`\n========================================`);
   console.log(`Summary: ${passed} passed, ${failed} failed`);
   console.log(`========================================\n`);

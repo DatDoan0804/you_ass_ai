@@ -201,6 +201,70 @@ export class BreakpointDetector {
   }
 
   /**
+   * Sets scheduled breakpoints directly from Gemini AI planning output.
+   * Every item includes an AI-crafted activity, timestamp, and optional isSummary flag.
+   * @param {Array<object>} aiBreakpoints
+   * @param {string} videoId
+   */
+  setBreakpointsFromAi(aiBreakpoints = [], videoId = 'video') {
+    if (!Array.isArray(aiBreakpoints) || aiBreakpoints.length === 0) return;
+    this.scheduledBreakpoints.clear();
+
+    for (let i = 0; i < aiBreakpoints.length; i++) {
+      const item = aiBreakpoints[i];
+      const ts = Number(item.timestamp);
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+
+      const bpId = `gemini_bp_${i}_${Math.round(ts)}`;
+      const isSummary = Boolean(item.isSummary || (this.videoDuration > 0 && ts >= this.videoDuration - 15));
+      const rawAct = item.activity || {};
+
+      const activity = {
+        id: `act_${bpId}`,
+        videoId,
+        type: rawAct.type || (isSummary ? 'teach_back' : 'multiple_choice'),
+        title: item.milestoneTitle || (isSummary ? 'End of Video Summary' : `Checkpoint ${i + 1}`),
+        conceptName: item.milestoneTitle || item.chapterTitle || 'Core Concept',
+        difficulty: rawAct.difficulty || 'medium',
+        prompt: rawAct.prompt || rawAct.question || 'Reflect on this key moment.',
+        options: Array.isArray(rawAct.options) ? rawAct.options : [],
+        correctOptionIndices: Array.isArray(rawAct.correctOptionIndices)
+          ? rawAct.correctOptionIndices
+          : typeof rawAct.correctIndex === 'number'
+          ? [rawAct.correctIndex]
+          : [0],
+        correctIndex: typeof rawAct.correctIndex === 'number' ? rawAct.correctIndex : 0,
+        expectedKeyPoints: rawAct.expectedKeyPoints || rawAct.keyPoints || [],
+        exemplarAnswer: rawAct.sampleAnswer || rawAct.exemplarAnswer || rawAct.explanation || '',
+        sampleAnswer: rawAct.sampleAnswer || rawAct.exemplarAnswer || rawAct.explanation || '',
+        explanation: rawAct.explanation || '',
+        hint: rawAct.hint || 'Consider the main takeaway from the preceding section.',
+        isSummary,
+        source: 'gemini-ai'
+      };
+
+      this.scheduledBreakpoints.set(bpId, {
+        id: bpId,
+        chunkId: bpId,
+        chunkIndex: i,
+        timestamp: Number(ts.toFixed(2)),
+        reason: item.milestoneTitle || (isSummary ? 'Final Video Summary' : `AI Checkpoint ${i + 1}`),
+        milestoneTitle: item.milestoneTitle || (isSummary ? 'End of Video Summary' : `Checkpoint ${i + 1}`),
+        strength: 'strong',
+        source: 'gemini-ai',
+        aiRefined: true,
+        skippedByAi: false,
+        activity,
+        isSummary
+      });
+
+      this.log(`[Breakpoint] AI scheduled checkpoint: ${ts.toFixed(1)}s ("${item.milestoneTitle || 'Milestone'}"${isSummary ? ' [Summary]' : ''})`);
+    }
+
+    this.deduplicateAndSortBreakpoints();
+  }
+
+  /**
    * Enforces the 5-minute (300-second) minimum interval between consecutive breakpoints.
    * Rather than merely dropping close candidates, it:
    * 1. Evaluates candidate importance (strength, source, concept depth).

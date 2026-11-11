@@ -692,6 +692,7 @@ export class UIManager {
       <div class="yt-learn-card">
         <div class="yt-learn-card-header">
           <div class="yt-learn-badge-row">
+            ${activity.isSummary ? '<span class="yt-learn-badge summary-badge" style="background:#fde047;color:#0f172a;font-weight:700;">🎓 End-of-Video Summary</span>' : ''}
             <span class="yt-learn-badge ${isPrediction ? 'prediction' : ''}">
               ${this.escapeHtml(activity.title || this.formatActivityType(activity.type))}
             </span>
@@ -1699,6 +1700,13 @@ export class UIManager {
         player.appendChild(existing);
       }
       this.dualSubtitlesContainer = existing;
+      if (this.settings.subtitlePosition?.left && this.settings.subtitlePosition?.top && !existing.dataset.hasCustomPos) {
+        existing.style.left = this.settings.subtitlePosition.left;
+        existing.style.top = this.settings.subtitlePosition.top;
+        existing.style.bottom = 'auto';
+        existing.style.transform = 'none';
+        existing.dataset.hasCustomPos = 'true';
+      }
       return existing;
     }
 
@@ -1706,15 +1714,213 @@ export class UIManager {
     container.id = 'yt-learn-dual-subtitles-container';
     container.className = `yt-learn-dual-subtitles-container yt-learn-secondary-subtitle-container font-size-${this.settings.subtitleFontSize || 'medium'}`;
     container.innerHTML = `
-      <div class="yt-learn-dual-subtitles-box yt-learn-secondary-subtitle-box" id="yt-learn-dual-subtitles-box" style="display:none;">
+      <div class="yt-learn-dual-subtitles-box yt-learn-secondary-subtitle-box" id="yt-learn-dual-subtitles-box" style="display:none;" title="Drag to reposition subtitle | Double-click to reset">
         <div class="yt-learn-sub-line yt-learn-sub-primary" id="yt-learn-sub-primary" style="display:none;"></div>
         <div class="yt-learn-sub-line yt-learn-sub-secondary yt-learn-secondary-subtitle-text" id="yt-learn-sub-secondary"></div>
       </div>
     `;
 
+    if (this.settings.subtitlePosition?.left && this.settings.subtitlePosition?.top) {
+      container.style.left = this.settings.subtitlePosition.left;
+      container.style.top = this.settings.subtitlePosition.top;
+      container.style.bottom = 'auto';
+      container.style.transform = 'none';
+      container.dataset.hasCustomPos = 'true';
+    }
+
+    const box = container.querySelector('#yt-learn-dual-subtitles-box');
+    this.setupDraggableSubtitle(container, box);
+
     player.appendChild(container);
     this.dualSubtitlesContainer = container;
     return container;
+  }
+
+  /**
+   * Sets up drag-and-drop movement for the secondary subtitle box so the user can
+   * move it anywhere on the video player just like YouTube's native captions.
+   */
+  setupDraggableSubtitle(container, box) {
+    if (!container || !box || typeof document === 'undefined') return;
+
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+    let hasMoved = false;
+
+    const onMouseDown = (e) => {
+      if (e.button !== 0) return; // Left mouse click only
+      const player = container.parentElement;
+      if (!player) return;
+
+      isDragging = true;
+      hasMoved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+
+      const playerRect = player.getBoundingClientRect?.() || { left: 0, top: 0, width: 640, height: 360 };
+      const boxRect = container.getBoundingClientRect?.() || { left: 0, top: 0, width: 200, height: 40 };
+
+      startLeft = (boxRect.left || 0) - (playerRect.left || 0);
+      startTop = (boxRect.top || 0) - (playerRect.top || 0);
+
+      box.classList.add?.('is-dragging');
+      e.stopPropagation?.();
+
+      const onMouseMove = (moveEvent) => {
+        if (!isDragging) return;
+        const deltaX = moveEvent.clientX - startX;
+        const deltaY = moveEvent.clientY - startY;
+
+        if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+          hasMoved = true;
+        }
+
+        const playerWidth = playerRect.width || player.offsetWidth || 640;
+        const playerHeight = playerRect.height || player.offsetHeight || 360;
+        const containerWidth = boxRect.width || container.offsetWidth || 200;
+        const containerHeight = boxRect.height || container.offsetHeight || 40;
+
+        let newLeft = startLeft + deltaX;
+        let newTop = startTop + deltaY;
+
+        // Clamp inside video player with 8px margin
+        newLeft = Math.max(8, Math.min(newLeft, playerWidth - containerWidth - 8));
+        newTop = Math.max(8, Math.min(newTop, playerHeight - containerHeight - 8));
+
+        const leftPercent = (newLeft / playerWidth) * 100;
+        const topPercent = (newTop / playerHeight) * 100;
+
+        container.style.left = `${leftPercent.toFixed(2)}%`;
+        container.style.top = `${topPercent.toFixed(2)}%`;
+        container.style.bottom = 'auto';
+        container.style.transform = 'none';
+        if (container.dataset) {
+          container.dataset.hasCustomPos = 'true';
+        }
+
+        this.customSubtitlePosition = {
+          left: `${leftPercent.toFixed(2)}%`,
+          top: `${topPercent.toFixed(2)}%`
+        };
+
+        moveEvent.stopPropagation?.();
+        moveEvent.preventDefault?.();
+      };
+
+      const onMouseUp = (upEvent) => {
+        if (!isDragging) return;
+        isDragging = false;
+        box.classList.remove?.('is-dragging');
+        document.removeEventListener('mousemove', onMouseMove, true);
+        document.removeEventListener('mouseup', onMouseUp, true);
+
+        if (hasMoved && this.customSubtitlePosition) {
+          this.settings.subtitlePosition = this.customSubtitlePosition;
+          this.callbacks.onSaveSettings?.({ subtitlePosition: this.customSubtitlePosition });
+          upEvent.stopPropagation?.();
+          upEvent.preventDefault?.();
+        }
+      };
+
+      document.addEventListener('mousemove', onMouseMove, true);
+      document.addEventListener('mouseup', onMouseUp, true);
+    };
+
+    const onTouchStart = (e) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      const player = container.parentElement;
+      if (!player) return;
+
+      isDragging = true;
+      hasMoved = false;
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+
+      const playerRect = player.getBoundingClientRect?.() || { left: 0, top: 0, width: 640, height: 360 };
+      const boxRect = container.getBoundingClientRect?.() || { left: 0, top: 0, width: 200, height: 40 };
+
+      startLeft = (boxRect.left || 0) - (playerRect.left || 0);
+      startTop = (boxRect.top || 0) - (playerRect.top || 0);
+
+      box.classList.add?.('is-dragging');
+      e.stopPropagation?.();
+
+      const onTouchMove = (moveEvent) => {
+        if (!isDragging || !moveEvent.touches || moveEvent.touches.length !== 1) return;
+        const mt = moveEvent.touches[0];
+        const deltaX = mt.clientX - startX;
+        const deltaY = mt.clientY - startY;
+
+        hasMoved = true;
+        const playerWidth = playerRect.width || player.offsetWidth || 640;
+        const playerHeight = playerRect.height || player.offsetHeight || 360;
+        const containerWidth = boxRect.width || container.offsetWidth || 200;
+        const containerHeight = boxRect.height || container.offsetHeight || 40;
+
+        let newLeft = startLeft + deltaX;
+        let newTop = startTop + deltaY;
+
+        newLeft = Math.max(8, Math.min(newLeft, playerWidth - containerWidth - 8));
+        newTop = Math.max(8, Math.min(newTop, playerHeight - containerHeight - 8));
+
+        const leftPercent = (newLeft / playerWidth) * 100;
+        const topPercent = (newTop / playerHeight) * 100;
+
+        container.style.left = `${leftPercent.toFixed(2)}%`;
+        container.style.top = `${topPercent.toFixed(2)}%`;
+        container.style.bottom = 'auto';
+        container.style.transform = 'none';
+        if (container.dataset) {
+          container.dataset.hasCustomPos = 'true';
+        }
+
+        this.customSubtitlePosition = {
+          left: `${leftPercent.toFixed(2)}%`,
+          top: `${topPercent.toFixed(2)}%`
+        };
+
+        moveEvent.stopPropagation?.();
+      };
+
+      const onTouchEnd = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        box.classList.remove?.('is-dragging');
+        document.removeEventListener('touchmove', onTouchMove, true);
+        document.removeEventListener('touchend', onTouchEnd, true);
+
+        if (hasMoved && this.customSubtitlePosition) {
+          this.settings.subtitlePosition = this.customSubtitlePosition;
+          this.callbacks.onSaveSettings?.({ subtitlePosition: this.customSubtitlePosition });
+        }
+      };
+
+      document.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
+      document.addEventListener('touchend', onTouchEnd, true);
+    };
+
+    const onDblClick = (e) => {
+      e.stopPropagation?.();
+      e.preventDefault?.();
+      container.style.left = '50%';
+      container.style.bottom = '';
+      container.style.top = '';
+      container.style.transform = 'translateX(-50%)';
+      if (container.dataset) {
+        delete container.dataset.hasCustomPos;
+      }
+      this.customSubtitlePosition = null;
+      this.settings.subtitlePosition = null;
+      this.callbacks.onSaveSettings?.({ subtitlePosition: null });
+    };
+
+    box.addEventListener?.('mousedown', onMouseDown);
+    box.addEventListener?.('touchstart', onTouchStart, { passive: true });
+    box.addEventListener?.('dblclick', onDblClick);
   }
 
   renderDualSubtitles(activeCues, settings = this.settings) {

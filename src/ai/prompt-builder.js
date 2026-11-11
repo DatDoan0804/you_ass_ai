@@ -460,6 +460,101 @@ export const SCHEMAS = {
       }
     },
     required: ['milestoneTitle']
+  },
+
+  VIDEO_BREAKPOINTS_AND_ACTIVITIES: {
+    type: 'OBJECT',
+    properties: {
+      overview: {
+        type: 'STRING',
+        description: 'Concise 2-sentence summary of the video content and main learning theme.'
+      },
+      breakpoints: {
+        type: 'ARRAY',
+        description: 'Chronologically ordered list of learning checkpoints with questions.',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            timestamp: {
+              type: 'NUMBER',
+              description: 'Exact timestamp in seconds where playback pauses for this activity. Must maintain minInterval spacing.'
+            },
+            milestoneTitle: {
+              type: 'STRING',
+              description: 'Short 2-6 word title for this milestone.'
+            },
+            chapterTitle: {
+              type: 'STRING',
+              description: 'Chapter or section title context.'
+            },
+            isSummary: {
+              type: 'BOOLEAN',
+              description: 'True ONLY for the final wrap-up activity at the very end of the video.'
+            },
+            activity: {
+              type: 'OBJECT',
+              properties: {
+                type: {
+                  type: 'STRING',
+                  description: 'multiple_choice | short_answer | teach_back | prediction | critical_thinking'
+                },
+                question: {
+                  type: 'STRING',
+                  description: 'Engaging, thoughtful question testing comprehension, mechanism, or synthesis.'
+                },
+                prompt: {
+                  type: 'STRING',
+                  description: 'Alternative prompt text for the activity.'
+                },
+                options: {
+                  type: 'ARRAY',
+                  items: { type: 'STRING' },
+                  description: 'For multiple_choice, exactly 4 distinct options.'
+                },
+                correctIndex: {
+                  type: 'INTEGER',
+                  description: 'For multiple_choice, 0-3 index of the correct answer.'
+                },
+                correctOptionIndices: {
+                  type: 'ARRAY',
+                  items: { type: 'INTEGER' },
+                  description: 'Indices of correct options.'
+                },
+                sampleAnswer: {
+                  type: 'STRING',
+                  description: 'Expected exemplar answer for open-ended or summary questions.'
+                },
+                exemplarAnswer: {
+                  type: 'STRING',
+                  description: 'Alternative exemplar answer.'
+                },
+                expectedKeyPoints: {
+                  type: 'ARRAY',
+                  items: { type: 'STRING' },
+                  description: 'Key points to look for in the user answer.'
+                },
+                keyPoints: {
+                  type: 'ARRAY',
+                  items: { type: 'STRING' },
+                  description: 'Alternative key points list.'
+                },
+                explanation: {
+                  type: 'STRING',
+                  description: 'Clear educational explanation of why the answer is correct.'
+                },
+                difficulty: {
+                  type: 'STRING',
+                  description: 'easy | medium | hard'
+                }
+              },
+              required: ['type', 'question', 'explanation']
+            }
+          },
+          required: ['timestamp', 'milestoneTitle', 'activity']
+        }
+      }
+    },
+    required: ['overview', 'breakpoints']
   }
 };
 
@@ -803,5 +898,83 @@ ${mergedSummary}
 Output the structured JSON with milestoneTitle and synthesisReasoning.`;
 
     return { systemPrompt, userPrompt, schema: SCHEMAS.MILESTONE_TITLE_SYNTHESIS };
+  }
+
+  static buildVideoBreakpointsAndActivitiesPrompt({
+    videoTitle = '',
+    videoDuration = 0,
+    chapters = [],
+    transcriptCues = [],
+    transcriptChunks = [],
+    minIntervalSeconds = 300,
+    preferredActivityTypes = ['multiple_choice', 'short_answer', 'teach_back', 'prediction', 'critical_thinking']
+  }) {
+    const systemPrompt = `You are an expert pedagogical interactive tutor embedded in YouTube.
+Your task is to analyze the video's transcript and chapter timestamps, decide the optimal breakpoint timestamps for interactive check-ins, and formulate engaging, high-yield questions for each checkpoint.
+
+MANDATORY RULES:
+1. EVERY VIDEO GETS BREAKPOINTS: Regardless of whether the video is educational, informational, or pure entertainment (gaming, comedy, music, vlogs, reactions), you MUST generate interactive checkpoints. For entertainment videos, focus on narrative progression, character motivations, humor mechanics, predictions, or creative critical thinking.
+2. MINIMUM INTERVAL SPACING: Breakpoints MUST be spaced apart by at least ${minIntervalSeconds} seconds (default 300s / 5 minutes), unless the total video duration is shorter than the interval, in which case space them proportionally. Do NOT place consecutive breakpoints too close together.
+3. CHAPTER AND THEMATIC ALIGNMENT: Prefer aligning breakpoints with natural chapter ends or thematic shifts where the speaker concludes an idea or section.
+4. QUESTION TYPE SUITABILITY: Choose the most fitting question type from [${preferredActivityTypes.join(', ')}]:
+   - "multiple_choice": Great for distinctions, cause-and-effect, and common misconceptions. MUST provide exactly 4 realistic options with 1 correct answer (indicated by correctIndex).
+   - "short_answer": Great for articulating a core reason, explaining a process, or summarizing in 1-2 sentences.
+   - "teach_back": Great for asking the user to explain a concept in simple terms to a beginner.
+   - "prediction": Great when an experiment, problem, challenge, or plot setup occurs right before the outcome is revealed.
+   - "critical_thinking": Great for evaluating trade-offs, contrasting viewpoints, or analyzing implications.
+5. MANDATORY FINAL END-OF-VIDEO SUMMARY ACTIVITY:
+   You MUST place one final activity right at the end of the video (placed within the last 5-15 seconds of videoDuration).
+   Set "isSummary": true on this breakpoint.
+   This final activity MUST be a comprehensive wrap-up synthesis asking the viewer to summarize the main overarching message, core takeaway, or central idea of the entire video.
+6. GROUNDING: Everything must be strictly grounded in the video's actual transcript.
+
+Output a valid JSON object matching the schema.`;
+
+    let chapterText = 'No explicit chapters provided.';
+    if (Array.isArray(chapters) && chapters.length > 0) {
+      chapterText = chapters
+        .map((ch, i) => `Chapter ${i + 1}: "${ch.title || 'Section'}" (start: ${ch.start}s, end: ${ch.end}s)`)
+        .join('\n');
+    }
+
+    const formatSec = (sec) => {
+      const s = Math.max(0, Math.floor(sec || 0));
+      const m = Math.floor(s / 60);
+      const rem = s % 60;
+      return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+    };
+
+    let transcriptText = '';
+    if (Array.isArray(transcriptChunks) && transcriptChunks.length > 0) {
+      transcriptText = transcriptChunks
+        .slice(0, 50)
+        .map((c) => `[${formatSec(c.start)} - ${formatSec(c.end)}] (Chapter: ${c.chapterTitle || 'General'})\n${c.text}`)
+        .join('\n\n');
+    } else if (Array.isArray(transcriptCues) && transcriptCues.length > 0) {
+      transcriptText = transcriptCues
+        .slice(0, 300)
+        .map((c) => `[${formatSec(c.start)}] ${c.text}`)
+        .join('\n');
+    }
+
+    const userPrompt = `Video Title: "${videoTitle}"
+Total Duration: ${videoDuration} seconds (~${Math.round(videoDuration / 60)} minutes)
+Minimum Breakpoint Interval: ${minIntervalSeconds} seconds
+
+Chapter End Timestamps:
+${chapterText}
+
+Transcript:
+"""
+${transcriptText}
+"""
+
+Generate the structured JSON plan of breakpoints and questions for this video according to the rules, including the final summary activity.`;
+
+    return {
+      systemPrompt,
+      userPrompt,
+      schema: SCHEMAS.VIDEO_BREAKPOINTS_AND_ACTIVITIES
+    };
   }
 }

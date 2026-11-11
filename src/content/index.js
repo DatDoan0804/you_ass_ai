@@ -363,9 +363,8 @@ export class YouTubeLearningAssistantApp {
 
   isLearningActiveForCurrentVideo() {
     if (this.settings.enabled === false) return false;
-    if (this.userClassificationOverride) return true;
-    if (!this.videoClassification) return true;
-    return Boolean(this.videoClassification.shouldActivateLearning);
+    // Every video has breakpoints regardless of entertainment or education
+    return true;
   }
 
   syncTimelineMarkers() {
@@ -519,58 +518,95 @@ export class YouTubeLearningAssistantApp {
       `[Breakpoint] Video classified: ${classification.category} (${classification.educationalValue}/100, confidence: ${classification.confidence})`
     );
 
-    // Initialize the Non-Educational Active Intervention tracker
-    await this.interventionManager.initForVideo(videoId, classification);
-
-    if (!classification.shouldActivateLearning && !this.userClassificationOverride) {
-      this.uiManager.setStatus('Intervention Active (Entertainment)', 'paused');
-      this.log(
-        `[Breakpoint] Learning auto-disabled for non-educational video (${classification.educationalValue}/100). Active intervention armed (${this.interventionManager.targetThresholdSeconds}s).`
-      );
-      return;
-    }
-
+    // Every video has breakpoints regardless of entertainment or education.
+    // The Gemini AI is responsible for deciding breakpoints and generating questions.
     const hasChapters = this.settings.useYoutubeChapters !== false && chapters.length > 0;
     if (!subtitleResult.hasSubtitles && !hasChapters) {
       this.scheduleLateMetadataCheck(videoId, sessionEpoch, 0);
     }
-    if (!subtitleResult.hasSubtitles && !hasChapters) {
-      this.uiManager.setStatus('No Captions or Chapters', 'paused');
-      return;
-    }
 
+    // 1. Immediate heuristic seed so timeline markers appear instantly
     this.breakpointDetector.seedInitialCandidates(
       subtitleResult.chunks,
       chapters,
       this.getEffectiveDuration(),
       videoId
     );
-
-    if (
-      classification.category === 'Mixed' &&
-      !this.userClassificationOverride &&
-      Array.isArray(classification.educationalChunkIds) &&
-      classification.educationalChunkIds.length > 0
-    ) {
-      this.breakpointDetector.filterToEducationalChunks(classification.educationalChunkIds);
-      this.log(`[Breakpoint] Mixed video: filtered breakpoints to ${classification.educationalChunkIds.length} educational sections.`);
-    }
-
     this.syncTimelineMarkers();
 
-    const totalScheduled = this.breakpointDetector.getAllScheduledBreakpoints().length;
+    const initialTotal = this.breakpointDetector.getAllScheduledBreakpoints().length;
     this.uiManager.setStatus(
-      `Active (${totalScheduled} breakpoints)`,
+      `Active (${initialTotal} breakpoints)`,
       'ready'
     );
 
-    if (subtitleResult.chunks.length > 0 && this.settings.useAiBreakpoints !== false) {
-      this.prepareUpcomingSectionsAhead(
-        this.videoController.getCurrentTime(),
+    // 2. Gemini AI decides breakpoints & questions directly from transcript and chapter ends
+    if (this.settings.useAiBreakpoints !== false) {
+      await this.planBreakpointsWithGemini(
         videoId,
-        sessionEpoch
+        sessionEpoch,
+        subtitleResult,
+        chapters
       );
     }
+  }
+
+  /**
+   * Sends the transcript and chapter end timestamps to Gemini AI.
+   * Gemini decides the optimal breakpoint timestamps, generates tailored questions,
+   * enforces interval spacing, and adds an overarching summary activity at the end of the video.
+   */
+  async planBreakpointsWithGemini(videoId, sessionEpoch, subtitleResult, chapters = []) {
+    if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+    if (this.settings.enabled === false) return;
+
+    try {
+      this.uiManager.setStatus('AI Planning Breakpoints & Questions...', 'preparing');
+
+      const videoDuration = this.getEffectiveDuration();
+      const promptSpec = PromptBuilder.buildVideoBreakpointsAndActivitiesPrompt({
+        videoTitle: this.videoMetadata.title || '',
+        videoDuration,
+        chapters,
+        transcriptCues: this.subtitleManager.cues || [],
+        transcriptChunks: subtitleResult.chunks || [],
+        minIntervalSeconds: this.settings.minIntervalSeconds || 300,
+        preferredActivityTypes: this.settings.preferredActivityTypes || [
+          'multiple_choice',
+          'short_answer',
+          'teach_back',
+          'prediction',
+          'critical_thinking'
+        ]
+      });
+
+      const res = await this.requestHandler('AI_PLAN_BREAKPOINTS_AND_ACTIVITIES', {
+        videoId,
+        sessionEpoch,
+        cacheKey: `plan_bp_${videoId}`,
+        promptSpec
+      });
+
+      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+
+      if (res && res.ok && res.data && Array.isArray(res.data.breakpoints) && res.data.breakpoints.length > 0) {
+        this.log(
+          `[Breakpoint] Gemini AI planned ${res.data.breakpoints.length} checkpoints and questions for video!`
+        );
+        this.breakpointDetector.setBreakpointsFromAi(res.data.breakpoints, videoId);
+        this.syncTimelineMarkers();
+
+        const count = this.breakpointDetector.getAllScheduledBreakpoints().length;
+        this.uiManager.setStatus(`Active (${count} AI checkpoints)`, 'ready');
+        return;
+      }
+    } catch (err) {
+      this.log(`[Breakpoint] Gemini AI planning fallback (${err.message}). Using seeded checkpoints.`);
+    }
+
+    if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+    const totalScheduled = this.breakpointDetector.getAllScheduledBreakpoints().length;
+    this.uiManager.setStatus(`Active (${totalScheduled} breakpoints)`, 'ready');
   }
 
   scheduleLateMetadataCheck(videoId, sessionEpoch, retryCount = 0) {

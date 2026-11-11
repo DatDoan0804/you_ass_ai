@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS = {
   primarySubtitleLang: 'auto', // 'auto' | language code
   secondarySubtitleLang: 'en', // default translation / companion language downloaded on demand
   subtitleFontSize: 'medium', // 'small' | 'medium' | 'large'
+  subtitlePosition: null, // Custom { left: 'X%', top: 'Y%' } position when dragged
   hideNativeSubtitles: false, // Never hide YouTube's native captions (one from YouTube, one from app)
   preferredActivityTypes: [
     'multiple_choice',
