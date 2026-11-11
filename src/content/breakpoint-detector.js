@@ -42,6 +42,7 @@ export class BreakpointDetector {
     this.inProgressChunkIds = new Set();
     this.lastActivityTimestamp = 0;
     this.videoDuration = 0;
+    this.hasAiPlanned = false;
   }
 
   updateSettings(newSettings) {
@@ -54,6 +55,7 @@ export class BreakpointDetector {
     this.inProgressChunkIds.clear();
     this.lastActivityTimestamp = 0;
     this.videoDuration = 0;
+    this.hasAiPlanned = false;
   }
 
   /**
@@ -262,6 +264,7 @@ export class BreakpointDetector {
     }
 
     this.deduplicateAndSortBreakpoints();
+    this.hasAiPlanned = true;
   }
 
   /**

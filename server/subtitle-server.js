@@ -184,42 +184,63 @@ export function findAnyInCache(videoId) {
 
 /**
  * Translates an array of texts into target language using Google Translate API.
- * Batches lines with POST requests to minimize network calls and avoid rate limits.
+ * Batches lines with POST requests and handles 429 rate limits gracefully.
  * @param {string[]} texts
  * @param {string} targetLang
  * @returns {Promise<string[]>}
  */
 export async function translateTexts(texts, targetLang = 'en') {
   if (!Array.isArray(texts) || texts.length === 0) return [];
-  const batchSize = 120;
+  const batchSize = 60;
   const translated = [];
 
   for (let i = 0; i < texts.length; i += batchSize) {
     const chunk = texts.slice(i, i + batchSize);
     const combined = chunk.join('\n');
-    try {
-      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
-        body: `q=${encodeURIComponent(combined)}`,
-        signal: AbortSignal.timeout(12000)
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const translatedChunkText = (data && data[0]) ? data[0].map((item) => item[0]).join('') : '';
-      const translatedLines = translatedChunkText.split('\n');
-      for (let j = 0; j < chunk.length; j++) {
-        translated.push((translatedLines[j] || '').trim() || chunk[j]);
+    let success = false;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+          body: `q=${encodeURIComponent(combined)}`,
+          signal: AbortSignal.timeout(12000)
+        });
+
+        if (res.status === 429) {
+          console.warn(`[LocalServer] Translate endpoint HTTP 429 rate limit. Waiting 2000ms...`);
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const translatedChunkText = (data && data[0]) ? data[0].map((item) => item[0]).join('') : '';
+        const translatedLines = translatedChunkText.split('\n');
+        for (let j = 0; j < chunk.length; j++) {
+          translated.push((translatedLines[j] || '').trim() || chunk[j]);
+        }
+        success = true;
+        break;
+      } catch (err) {
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 800));
+        } else {
+          console.warn(`[LocalServer] Batch translation failed (${err.message}). Preserving original text.`);
+        }
       }
-      if (i + batchSize < texts.length) {
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    } catch (err) {
-      console.warn(`[LocalServer] Batch translation failed (${err.message}). Preserving original text.`);
+    }
+
+    if (!success) {
       for (const line of chunk) {
         translated.push(line);
       }
+    }
+
+    if (i + batchSize < texts.length) {
+      await new Promise((r) => setTimeout(r, 250));
     }
   }
 
@@ -305,105 +326,142 @@ export function runYtDlp(videoId, extraArgs = []) {
   });
 }
 
+/** @type {Map<string, Promise<{filePath: string, matchedLang: string}|null>>} */
+const inFlightDownloads = new Map();
+
+/** @type {Map<string, number>} cacheKey -> expiresAt timestamp */
+const negativeSubCache = new Map();
+
 /**
  * Invokes yt-dlp in terminal to download subtitles for a video.
  * Uses native download + fast translation to guarantee 0 HTTP 429 blocks.
+ * Deduplicates in-flight calls and implements negative caching.
  * @param {string} videoId
  * @param {string} lang
  * @returns {Promise<{filePath: string, matchedLang: string}|null>}
  */
 export async function downloadSubtitlesWithYtDlp(videoId, lang = 'en') {
   const cleanLang = (lang || 'en').toLowerCase().split('-')[0];
+  const cacheKey = `${videoId}:${cleanLang}`;
 
   // 1. Check local cache first (0 network calls)
   const cached = findInCache(videoId, lang);
   if (cached) return cached;
 
-  // 2. Discover video's original language in ~1 second via yt-dlp metadata
-  let videoLang = '';
-  try {
-    const detectArgs = ['--print', '%(language)s', '--skip-download', `https://www.youtube.com/watch?v=${videoId}`];
-    if (fs.existsSync('/usr/bin/node')) {
-      detectArgs.unshift('--js-runtimes', 'node:/usr/bin/node');
-    }
-    const { stdout } = await new Promise((res) => {
-      const p = spawn('yt-dlp', detectArgs);
-      let out = '';
-      p.stdout.on('data', (d) => { out += d.toString(); });
-      p.on('close', () => res({ stdout: out }));
-      p.on('error', () => res({ stdout: '' }));
-    });
-    const rawLang = stdout.trim().split('\n')[0].trim();
-    if (rawLang && rawLang !== 'NA' && rawLang !== 'null') {
-      videoLang = rawLang.toLowerCase().split('-')[0];
-    }
-  } catch (_) {}
-
-  if (!videoLang) {
-    videoLang = cleanLang;
-  }
-
-  // 3. If target language matches video native language, download direct + auto-subs in one fast shot
-  if (cleanLang === videoLang) {
-    console.log(`[LocalServer] Video native language matches requested language '${lang}'. Downloading direct + auto captions...`);
-    await runYtDlp(videoId, [
-      '--write-subs',
-      '--write-auto-subs',
-      '--sub-langs',
-      `${cleanLang}-orig,${cleanLang}.*,${cleanLang},${lang}`
-    ]);
-
-    const directMatch = findInCache(videoId, lang);
-    if (directMatch) {
-      console.log(`[LocalServer] Direct native subtitle found: ${path.basename(directMatch.filePath)}`);
-      return directMatch;
-    }
-  } else {
-    // 4. Target language is DIFFERENT from video native language (e.g. German video requested in English or Vietnamese)
-    // First try downloading authored subtitle in target language:
-    console.log(`[LocalServer] Checking for authored '${lang}' subtitles...`);
-    await runYtDlp(videoId, ['--write-subs', '--sub-langs', `${cleanLang}.*,${cleanLang},${lang}`]);
-    const directMatch = findInCache(videoId, lang);
-    if (directMatch) {
-      console.log(`[LocalServer] Authored '${lang}' subtitle found: ${path.basename(directMatch.filePath)}`);
-      return directMatch;
-    }
-
-    // 5. If no authored subtitle in target language, download the video's NATIVE spoken captions (never 429!)
-    console.log(`[LocalServer] Downloading video native language captions (${videoLang}) for translation to '${lang}'...`);
-    await runYtDlp(videoId, [
-      '--write-subs',
-      '--write-auto-subs',
-      '--sub-langs',
-      `${videoLang}-orig,${videoLang}.*,${videoLang},all,-live_chat`
-    ]);
-  }
-
-  // 6. Find any available subtitle for this video in cache
-  let nativeSub = findInCache(videoId, lang) || findAnyInCache(videoId);
-  if (!nativeSub) {
-    console.warn(`[LocalServer] No subtitles found for videoId=${videoId}`);
+  // 2. Negative cache: if this video+lang failed in the last 45s, skip to prevent hammering
+  const failedUntil = negativeSubCache.get(cacheKey);
+  if (failedUntil && Date.now() < failedUntil) {
     return null;
   }
 
-  // If native subtitle is already in requested language, return it
-  if (nativeSub.matchedLang === lang || nativeSub.matchedLang.startsWith(cleanLang)) {
-    return nativeSub;
+  // 3. In-flight request deduplication: return existing pending promise if already downloading
+  if (inFlightDownloads.has(cacheKey)) {
+    return await inFlightDownloads.get(cacheKey);
   }
 
-  // 7. Translate native subtitle to target language using fast batch POST translator
-  console.log(`[LocalServer] Translating native subtitle (${path.basename(nativeSub.filePath)}) to '${lang}'...`);
-  const rawCues = loadSubtitleFile(nativeSub.filePath);
-  if (!rawCues || rawCues.length === 0) {
-    return nativeSub;
+  const downloadJob = (async () => {
+    // Discover video's original language in ~1 second via yt-dlp metadata
+    let videoLang = '';
+    try {
+      const detectArgs = ['--print', '%(language)s', '--skip-download', `https://www.youtube.com/watch?v=${videoId}`];
+      if (fs.existsSync('/usr/bin/node')) {
+        detectArgs.unshift('--js-runtimes', 'node:/usr/bin/node');
+      }
+      const { stdout } = await new Promise((res) => {
+        const p = spawn('yt-dlp', detectArgs);
+        let out = '';
+        p.stdout.on('data', (d) => { out += d.toString(); });
+        p.on('close', () => res({ stdout: out }));
+        p.on('error', () => res({ stdout: '' }));
+      });
+      const rawLang = stdout.trim().split('\n')[0].trim();
+      if (rawLang && rawLang !== 'NA' && rawLang !== 'null') {
+        videoLang = rawLang.toLowerCase().split('-')[0];
+      }
+    } catch (_) {}
+
+    if (!videoLang) {
+      videoLang = cleanLang;
+    }
+
+    // If target language matches video native language, download direct + auto-subs in one fast shot
+    if (cleanLang === videoLang) {
+      console.log(`[LocalServer] Video native language matches requested language '${lang}'. Downloading direct + auto captions...`);
+      await runYtDlp(videoId, [
+        '--write-subs',
+        '--write-auto-subs',
+        '--sub-langs',
+        `${cleanLang}-orig,${cleanLang}.*,${cleanLang},${lang}`
+      ]);
+
+      const directMatch = findInCache(videoId, lang);
+      if (directMatch) {
+        console.log(`[LocalServer] Direct native subtitle found: ${path.basename(directMatch.filePath)}`);
+        return directMatch;
+      }
+    } else {
+      // Target language is DIFFERENT from video native language (e.g. German video requested in English or Vietnamese)
+      // First try downloading authored OR auto-generated subtitle in target language:
+      console.log(`[LocalServer] Checking for '${lang}' subtitles...`);
+      await runYtDlp(videoId, [
+        '--write-subs',
+        '--write-auto-subs',
+        '--sub-langs',
+        `${cleanLang}.*,${cleanLang},${lang}`
+      ]);
+      const directMatch = findInCache(videoId, lang);
+      if (directMatch) {
+        console.log(`[LocalServer] Authored/auto '${lang}' subtitle found: ${path.basename(directMatch.filePath)}`);
+        return directMatch;
+      }
+
+      // If no subtitle in target language, download ONLY the video's native spoken captions (NO ',all,'!)
+      console.log(`[LocalServer] Downloading video native language captions (${videoLang}) for translation to '${lang}'...`);
+      await runYtDlp(videoId, [
+        '--write-subs',
+        '--write-auto-subs',
+        '--sub-langs',
+        `${videoLang}-orig,${videoLang}.*,${videoLang}`
+      ]);
+    }
+
+    // Find any available subtitle for this video in cache
+    let nativeSub = findInCache(videoId, lang) || findAnyInCache(videoId);
+    if (!nativeSub) {
+      console.warn(`[LocalServer] No subtitles found for videoId=${videoId}`);
+      return null;
+    }
+
+    // If native subtitle is already in requested language, return it
+    if (nativeSub.matchedLang === lang || nativeSub.matchedLang.startsWith(cleanLang)) {
+      return nativeSub;
+    }
+
+    // Translate native subtitle to target language using batch POST translator
+    console.log(`[LocalServer] Translating native subtitle (${path.basename(nativeSub.filePath)}) to '${lang}'...`);
+    const rawCues = loadSubtitleFile(nativeSub.filePath);
+    if (!rawCues || rawCues.length === 0) {
+      return nativeSub;
+    }
+
+    const translatedCues = await translateCues(rawCues, lang);
+    const targetPath = path.join(CACHE_DIR, `${videoId}.${lang}.vtt`);
+    fs.writeFileSync(targetPath, cuesToVtt(translatedCues), 'utf8');
+    console.log(`[LocalServer] Successfully translated and cached: ${path.basename(targetPath)}`);
+
+    return { filePath: targetPath, matchedLang: lang };
+  })();
+
+  inFlightDownloads.set(cacheKey, downloadJob);
+  try {
+    const result = await downloadJob;
+    if (!result) {
+      negativeSubCache.set(cacheKey, Date.now() + 45000); // Negative cache for 45 seconds
+    }
+    return result;
+  } finally {
+    inFlightDownloads.delete(cacheKey);
   }
-
-  const translatedCues = await translateCues(rawCues, lang);
-  const targetPath = path.join(CACHE_DIR, `${videoId}.${lang}.vtt`);
-  fs.writeFileSync(targetPath, cuesToVtt(translatedCues), 'utf8');
-  console.log(`[LocalServer] Successfully translated and cached: ${path.basename(targetPath)}`);
-
-  return { filePath: targetPath, matchedLang: lang };
 }
 
 /**

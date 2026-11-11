@@ -2122,6 +2122,105 @@ This is subtitle line 2.
     assert.ok(typeof failedUntil === 'number' && failedUntil > Date.now(), 'failedLanguages holds future timestamp');
   });
 
+  console.log('\n19. Comprehensive HTTP 429 Prevention & Circuit Breakers');
+
+  await testAsync('GeminiProvider circuit breaker sets 25s cooldown on HTTP 429 and halts network calls', async () => {
+    const { GeminiProvider } = await import('../src/ai/gemini-provider.js');
+    GeminiProvider.resetRateLimitState();
+
+    let fetchCount = 0;
+    const mockFetch = async () => {
+      fetchCount++;
+      return {
+        ok: false,
+        status: 429,
+        json: async () => ({ error: { message: 'Resource has been exhausted (quota exceeded)' } })
+      };
+    };
+
+    const provider = new GeminiProvider({
+      apiKey: 'test-key',
+      fetchImpl: mockFetch,
+      maxRetries: 0
+    });
+
+    let firstErr = null;
+    try {
+      await provider.generateStructuredJSON({
+        systemPrompt: 'System',
+        userPrompt: 'User',
+        responseSchema: { type: 'object' }
+      });
+    } catch (e) {
+      firstErr = e;
+    }
+
+    assert.ok(firstErr, 'First call threw error');
+    assert.strictEqual(firstErr.status, 429);
+    assert.strictEqual(fetchCount, 1, 'Network fetch was called once');
+    assert.ok(GeminiProvider.cooldownUntil > Date.now(), 'cooldownUntil set to future timestamp');
+
+    // Second call during cooldown: must be halted immediately without calling fetchImpl!
+    let secondErr = null;
+    try {
+      await provider.generateStructuredJSON({
+        systemPrompt: 'System',
+        userPrompt: 'User',
+        responseSchema: { type: 'object' }
+      });
+    } catch (e) {
+      secondErr = e;
+    }
+
+    assert.ok(secondErr, 'Second call threw immediately');
+    assert.strictEqual(secondErr.status, 429);
+    assert.strictEqual(secondErr.code, 'RATE_LIMITED');
+    assert.strictEqual(fetchCount, 1, 'ZERO additional network calls made during circuit-breaker cooldown');
+
+    GeminiProvider.resetRateLimitState();
+  });
+
+  await test('BreakpointDetector tracks hasAiPlanned flag to suppress redundant chunk preparation', () => {
+    const detector = new BreakpointDetector({ settings: { minIntervalSeconds: 300 } });
+    assert.strictEqual(detector.hasAiPlanned, false, 'Initial hasAiPlanned is false');
+
+    detector.setBreakpointsFromAi([
+      { timestamp: 150, milestoneTitle: 'Checkpoint 1', activity: { prompt: 'How is it going?' } },
+      { timestamp: 450, milestoneTitle: 'Checkpoint 2', activity: { prompt: 'What did you think?' } }
+    ], 'vidTest');
+
+    assert.strictEqual(detector.hasAiPlanned, true, 'hasAiPlanned set to true after AI planning');
+    detector.reset();
+    assert.strictEqual(detector.hasAiPlanned, false, 'reset clears hasAiPlanned');
+  });
+
+  await testAsync('SubtitleManager negative caches 404 from local server for 60s without hitting synthetic tlang', async () => {
+    let networkAttempts = 0;
+    const mockSender = async (action, payload) => {
+      if (action === 'FETCH_LOCAL_SUBTITLE') {
+        return { ok: false, status: 404, error: 'Subtitle not found for videoId=vid429, lang=vi' };
+      }
+      if (action === 'FETCH_CAPTION_TRACK') {
+        networkAttempts++;
+        return { ok: true, data: '<transcript></transcript>' };
+      }
+      return { ok: true };
+    };
+
+    const mgr = new SubtitleManager(mockSender);
+    mgr.currentVideoId = 'vid429';
+    // No direct track for 'vi' in available tracks
+    mgr.availableTracks = [
+      { languageCode: 'en', baseUrl: 'https://www.youtube.com/api/timedtext?v=vid429&lang=en' }
+    ];
+
+    const res = await mgr.downloadSecondaryTrackOnDemand('vi', { videoId: 'vid429' });
+    assert.strictEqual(res, false, 'Returned false cleanly');
+    assert.strictEqual(networkAttempts, 0, 'Did not make synthetic timedtext request to YouTube');
+    const failedUntil = mgr.failedLanguages.get('vid429_vi');
+    assert.ok(typeof failedUntil === 'number' && failedUntil > Date.now() + 50000, 'Negative cache set for 60s');
+  });
+
   console.log(`\n========================================`);
   console.log(`Summary: ${passed} passed, ${failed} failed`);
   console.log(`========================================\n`);

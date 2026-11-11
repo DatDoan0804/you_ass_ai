@@ -18,6 +18,9 @@ import { createAIProvider } from '../ai/gemini-provider.js';
 /** @type {Map<string, AbortController>} requestKey -> AbortController */
 const inFlightControllers = new Map();
 
+/** @type {Map<string, Promise<any>>} cacheKey -> in-flight AI request promise */
+const inFlightAIRequests = new Map();
+
 /** @type {Map<string, object>} cacheKey -> cached AI response payload */
 const memoryCache = new Map();
 
@@ -165,7 +168,12 @@ async function executeAiRequest(tabId, action, payload) {
     return { ok: true, data: memoryCache.get(cacheKey), cached: true };
   }
 
-  // 2. Verify session is still current before starting network call
+  // 2. Deduplicate in-flight identical AI requests
+  if (cacheKey && inFlightAIRequests.has(cacheKey)) {
+    return await inFlightAIRequests.get(cacheKey);
+  }
+
+  // 3. Verify session is still current before starting network call
   const activeSession = activeTabSessions.get(tabId);
   if (
     activeSession &&
@@ -174,43 +182,57 @@ async function executeAiRequest(tabId, action, payload) {
     return { ok: false, stale: true, error: 'Request discarded: video session changed.' };
   }
 
-  const settings = await Database.getSettings();
-  const provider = createAIProvider(settings);
+  const aiJob = (async () => {
+    const settings = await Database.getSettings();
+    const provider = createAIProvider(settings);
 
-  const controller = new AbortController();
-  const requestId = `${tabId}:${videoId}:${sessionEpoch}:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`;
-  inFlightControllers.set(requestId, controller);
+    const controller = new AbortController();
+    const requestId = `${tabId}:${videoId}:${sessionEpoch}:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`;
+    inFlightControllers.set(requestId, controller);
+
+    try {
+      const result = await provider.generateStructuredJSON({
+        systemPrompt: promptSpec.systemPrompt,
+        userPrompt: promptSpec.userPrompt,
+        responseSchema: promptSpec.schema,
+        temperature: action === 'AI_GENERATE_ACTIVITY' ? 0.35 : 0.2,
+        signal: controller.signal
+      });
+
+      // 4. Re-verify session after async completion so a slow request never mutates a newly opened video
+      const postSession = activeTabSessions.get(tabId);
+      if (
+        postSession &&
+        (postSession.videoId !== videoId || postSession.sessionEpoch !== sessionEpoch)
+      ) {
+        return { ok: false, stale: true, error: 'Response discarded after completion: video changed.' };
+      }
+
+      if (cacheKey && result) {
+        // Keep memory cache bounded to 250 entries
+        if (memoryCache.size > 250) {
+          const oldestKey = memoryCache.keys().next().value;
+          memoryCache.delete(oldestKey);
+        }
+        memoryCache.set(cacheKey, result);
+      }
+
+      return { ok: true, data: result, cached: false };
+    } finally {
+      inFlightControllers.delete(requestId);
+    }
+  })();
+
+  if (cacheKey) {
+    inFlightAIRequests.set(cacheKey, aiJob);
+  }
 
   try {
-    const result = await provider.generateStructuredJSON({
-      systemPrompt: promptSpec.systemPrompt,
-      userPrompt: promptSpec.userPrompt,
-      responseSchema: promptSpec.schema,
-      temperature: action === 'AI_GENERATE_ACTIVITY' ? 0.35 : 0.2,
-      signal: controller.signal
-    });
-
-    // 3. Re-verify session after async completion so a slow request never mutates a newly opened video
-    const postSession = activeTabSessions.get(tabId);
-    if (
-      postSession &&
-      (postSession.videoId !== videoId || postSession.sessionEpoch !== sessionEpoch)
-    ) {
-      return { ok: false, stale: true, error: 'Response discarded after completion: video changed.' };
-    }
-
-    if (cacheKey && result) {
-      // Keep memory cache bounded to 250 entries
-      if (memoryCache.size > 250) {
-        const oldestKey = memoryCache.keys().next().value;
-        memoryCache.delete(oldestKey);
-      }
-      memoryCache.set(cacheKey, result);
-    }
-
-    return { ok: true, data: result, cached: false };
+    return await aiJob;
   } finally {
-    inFlightControllers.delete(requestId);
+    if (cacheKey) {
+      inFlightAIRequests.delete(cacheKey);
+    }
   }
 }
 

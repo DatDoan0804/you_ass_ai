@@ -438,6 +438,7 @@ export class YouTubeLearningAssistantApp {
     this.chunkSummaries.clear();
     this._isFetchingSecondary = false;
     this._lastSecondaryFetchAttempt = 0;
+    this._secondaryFetchAttempts = 0;
     if (videoId) {
       this.activityGenerator.resetHistory(videoId);
     }
@@ -687,13 +688,17 @@ export class YouTubeLearningAssistantApp {
 
     // Dual Subtitles Update (renders subtitles on video whenever enabled)
     if (this.settings.enableDualSubtitles !== false && this.subtitleManager) {
+      const attempts = this._secondaryFetchAttempts || 0;
+      const backoff = attempts === 0 ? 3000 : 15000;
       if (
         !this.subtitleManager.hasSecondarySubtitles &&
         this.currentVideoId &&
         this.settings.secondarySubtitleLang !== 'none' &&
         !this._isFetchingSecondary &&
-        (Date.now() - (this._lastSecondaryFetchAttempt || 0) > 4000)
+        attempts < 2 &&
+        (Date.now() - (this._lastSecondaryFetchAttempt || 0) > backoff)
       ) {
+        this._secondaryFetchAttempts = attempts + 1;
         this._lastSecondaryFetchAttempt = Date.now();
         this._isFetchingSecondary = true;
         this.subtitleManager.downloadSecondaryTrackOnDemand(
@@ -758,12 +763,17 @@ export class YouTubeLearningAssistantApp {
       return;
     }
 
-    if (this.settings.useAiBreakpoints !== false && this.subtitleManager.chunks.length > 0) {
+    if (
+      this.settings.useAiBreakpoints !== false &&
+      !this.breakpointDetector.hasAiPlanned &&
+      this.subtitleManager.chunks.length > 0
+    ) {
       this.prepareUpcomingSectionsAhead(currentTime, videoId, sessionEpoch, learnerContext);
     }
   }
 
   async prepareUpcomingSectionsAhead(currentTime, videoId, sessionEpoch, cachedLearnerContext = null) {
+    if (this.breakpointDetector.hasAiPlanned) return;
     const learnerContext =
       cachedLearnerContext || (await learningManager.getLearnerContext(videoId));
 
@@ -1073,6 +1083,8 @@ export class YouTubeLearningAssistantApp {
       'secondarySubtitleLang' in partialSettings ||
       'enableDualSubtitles' in partialSettings
     ) {
+      this._secondaryFetchAttempts = 0;
+      this._lastSecondaryFetchAttempt = 0;
       const targetVideoId = this.currentVideoId || this.videoMetadata?.videoId;
       if (targetVideoId && this.settings.enableDualSubtitles !== false && this.subtitleManager) {
         if (!this.videoMetadata) {

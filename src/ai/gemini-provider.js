@@ -22,6 +22,13 @@ export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 export const FALLBACK_GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-2.5-flash-lite'];
 
 export class GeminiProvider extends BaseAIProvider {
+  /** @type {number} Timestamp in ms until which all Gemini requests are circuit-broken after HTTP 429 */
+  static cooldownUntil = 0;
+
+  static resetRateLimitState() {
+    GeminiProvider.cooldownUntil = 0;
+  }
+
   constructor(config = {}) {
     super({
       ...config,
@@ -125,6 +132,14 @@ export class GeminiProvider extends BaseAIProvider {
       throw new Error('Fetch API is unavailable in this environment.');
     }
 
+    if (Date.now() < GeminiProvider.cooldownUntil) {
+      const remainingSec = Math.ceil((GeminiProvider.cooldownUntil - Date.now()) / 1000);
+      const limitErr = new Error(`Gemini rate-limit cooldown active (${remainingSec}s remaining).`);
+      limitErr.status = 429;
+      limitErr.code = 'RATE_LIMITED';
+      throw limitErr;
+    }
+
     let attempt = 0;
     let currentModel = this.model || DEFAULT_GEMINI_MODEL;
     const fallbackQueue = [...FALLBACK_GEMINI_MODELS];
@@ -171,9 +186,13 @@ export class GeminiProvider extends BaseAIProvider {
           }
         }
 
-        // Handle 429 Rate Limit or 503 Overload with exponential backoff
+        // Handle 429 Rate Limit or 503 Overload with exponential backoff and circuit breaker
+        if (status === 429) {
+          GeminiProvider.cooldownUntil = Date.now() + 25000;
+        }
+
         if ((status === 429 || status === 503) && attempt < this.maxRetries) {
-          const delayMs = Math.min(4000, 800 * Math.pow(2, attempt));
+          const delayMs = Math.min(8000, 2000 * Math.pow(2, attempt));
           console.warn(`[YT-Learn Gemini] HTTP ${status} (${message}). Retrying in ${delayMs}ms...`);
           await new Promise((r) => setTimeout(r, delayMs));
           attempt += 1;

@@ -313,10 +313,11 @@ export class SubtitleManager {
     // 2. FIRST PRIORITY: Query Local Subtitle Server running in terminal!
     // Downloads via terminal yt-dlp or serves from ./subtitles_cache/
     // ZERO YouTube requests from browser, 100% immune to 429 server blocks!
+    let localResult = null;
     const isServerBackingOff = Date.now() < (this.localServerOfflineUntil || 0);
     if (!isServerBackingOff && typeof this.sendBackgroundRequest === 'function') {
       try {
-        const localResult = await this.sendBackgroundRequest('FETCH_LOCAL_SUBTITLE', {
+        localResult = await this.sendBackgroundRequest('FETCH_LOCAL_SUBTITLE', {
           videoId,
           lang: targetLang
         });
@@ -357,12 +358,16 @@ export class SubtitleManager {
             }).catch(() => {});
           }
           return true;
+        } else if (localResult && (localResult.status === 404 || String(localResult.error).includes('404'))) {
+          // Negative cache for 60s when local server confirms subtitle doesn't exist
+          this.failedLanguages.set(cacheKey, Date.now() + 60000);
+          this.log(`[SubtitleManager] Subtitle not found on local server (404) for ${videoId} (${targetLang}).`);
         } else if (localResult && (localResult.isServerOffline || localResult.error)) {
-          this.localServerOfflineUntil = Date.now() + 4000;
+          this.localServerOfflineUntil = Date.now() + 15000;
           this.log(`[SubtitleManager] Local subtitle server unavailable (${localResult.error || 'offline'}). Seamless fallback to browser tracks.`);
         }
       } catch (localErr) {
-        this.localServerOfflineUntil = Date.now() + 4000;
+        this.localServerOfflineUntil = Date.now() + 15000;
         this.log(`[SubtitleManager] Local server connection failed: ${localErr.message}. Seamless fallback to browser tracks.`);
       }
     }
@@ -376,10 +381,13 @@ export class SubtitleManager {
     if (!tracks.some((t) => Boolean(t.baseUrl)) && !metadata?.activeTimedtextBaseUrl) {
       // Never synthesize fake timedtext URLs (https://www.youtube.com/api/timedtext?v=...)
       // Unsigned timedtext calls are rejected by YouTube with HTTP 429 server blocks!
+      this.failedLanguages.set(cacheKey, Date.now() + 60000);
       return false;
     }
 
-    return await this.loadSecondaryTrack(tracks, targetLang, this.primaryTrack || this.selectedTrack, metadata);
+    // If local server returned 404, only look for direct tracks in available tracks, avoiding synthetic &tlang= 429s
+    const allowAutoTranslate = !(localResult && (localResult.status === 404 || String(localResult.error).includes('404')));
+    return await this.loadSecondaryTrack(tracks, targetLang, this.primaryTrack || this.selectedTrack, metadata, allowAutoTranslate);
   }
 
   /**
@@ -395,7 +403,7 @@ export class SubtitleManager {
    * Checks for a direct matching track in captionTracks first, or uses YouTube's
    * &tlang= timedtext parameter to automatically translate from the primary track.
    */
-  async loadSecondaryTrack(captionTracks = [], preferredSecondaryLang = 'en', primaryTrack = null, metadata = {}) {
+  async loadSecondaryTrack(captionTracks = [], preferredSecondaryLang = 'en', primaryTrack = null, metadata = {}, allowAutoTranslate = true) {
     if (!preferredSecondaryLang || preferredSecondaryLang === 'none') {
       this.secondaryCues = [];
       this.secondaryTrack = null;
@@ -498,66 +506,68 @@ export class SubtitleManager {
     }
 
     // 3. Auto-translation via YouTube &tlang= parameter
-    const sourceTrack = primaryTrack?.baseUrl
-      ? primaryTrack
-      : this.primaryTrack?.baseUrl
-      ? this.primaryTrack
-      : (tracks || []).find((t) => t.baseUrl) ||
-        (metadata?.activeTimedtextBaseUrl ? { baseUrl: metadata.activeTimedtextBaseUrl } : null);
+    if (allowAutoTranslate) {
+      const sourceTrack = primaryTrack?.baseUrl
+        ? primaryTrack
+        : this.primaryTrack?.baseUrl
+        ? this.primaryTrack
+        : (tracks || []).find((t) => t.baseUrl) ||
+          (metadata?.activeTimedtextBaseUrl ? { baseUrl: metadata.activeTimedtextBaseUrl } : null);
 
-    if (sourceTrack && sourceTrack.baseUrl) {
-      const effectiveSecondaryLang = preferredSecondaryLang;
-      let base = SubtitleManager.normalizeTimedtextUrl(sourceTrack.baseUrl);
-      // Strip any prior tlang or fmt=json3 to let YouTube return clean translation XML/srv3
-      base = base.replace(/[?&]tlang=[^&]+/, '').replace(/[?&]fmt=json3/, '');
-      const targetLang = encodeURIComponent(effectiveSecondaryLang);
-      const translatedUrl = `${base}${base.includes('?') ? '&' : '?'}tlang=${targetLang}`;
+      if (sourceTrack && sourceTrack.baseUrl) {
+        const effectiveSecondaryLang = preferredSecondaryLang;
+        let base = SubtitleManager.normalizeTimedtextUrl(sourceTrack.baseUrl);
+        // Strip any prior tlang or fmt=json3 to let YouTube return clean translation XML/srv3
+        base = base.replace(/[?&]tlang=[^&]+/, '').replace(/[?&]fmt=json3/, '');
+        const targetLang = encodeURIComponent(effectiveSecondaryLang);
+        const translatedUrl = `${base}${base.includes('?') ? '&' : '?'}tlang=${targetLang}`;
 
-      try {
-        const rawTranslated = await this.fetchAndParseTrack(translatedUrl);
-        if (rawTranslated && rawTranslated.length > 0) {
-          this.secondaryCues = SubtitleManager.cleanAndMergeCues(rawTranslated);
-          this.secondaryTrack = {
-            languageCode: effectiveSecondaryLang,
-            name: `Translated (${effectiveSecondaryLang.toUpperCase()})`,
-            isAutoGenerated: true,
-            isTranslated: true
-          };
-          this.hasSecondarySubtitles = true;
-          this.failedLanguages.delete?.(cacheKey);
-          this.trackCache.set(cacheKey, this.secondaryCues);
-          this.trackCache.set(`${cacheKey}_track`, this.secondaryTrack);
-          this.log(`[Breakpoint] Secondary auto-translated captions loaded: ${this.secondaryCues.length} entries (${effectiveSecondaryLang})`);
+        try {
+          const rawTranslated = await this.fetchAndParseTrack(translatedUrl);
+          if (rawTranslated && rawTranslated.length > 0) {
+            this.secondaryCues = SubtitleManager.cleanAndMergeCues(rawTranslated);
+            this.secondaryTrack = {
+              languageCode: effectiveSecondaryLang,
+              name: `Translated (${effectiveSecondaryLang.toUpperCase()})`,
+              isAutoGenerated: true,
+              isTranslated: true
+            };
+            this.hasSecondarySubtitles = true;
+            this.failedLanguages.delete?.(cacheKey);
+            this.trackCache.set(cacheKey, this.secondaryCues);
+            this.trackCache.set(`${cacheKey}_track`, this.secondaryTrack);
+            this.log(`[Breakpoint] Secondary auto-translated captions loaded: ${this.secondaryCues.length} entries (${effectiveSecondaryLang})`);
 
-          if (!this.cues || this.cues.length === 0) {
-            this.cues = this.secondaryCues;
-            this.chunks = SubtitleManager.buildSemanticChunks(
-              this.cues,
-              metadata?.chapters || [],
-              metadata?.targetChunkSeconds || 30
-            );
-            this.hasSubtitles = true;
+            if (!this.cues || this.cues.length === 0) {
+              this.cues = this.secondaryCues;
+              this.chunks = SubtitleManager.buildSemanticChunks(
+                this.cues,
+                metadata?.chapters || [],
+                metadata?.targetChunkSeconds || 30
+              );
+              this.hasSubtitles = true;
+            }
+
+            if (this.currentVideoId) {
+              await db.saveTranscript(this.currentVideoId, {
+                cues: this.cues,
+                chunks: this.chunks,
+                trackInfo: this.selectedTrack,
+                primaryCues: this.primaryCues,
+                secondaryCues: this.secondaryCues,
+                primaryTrack: this.primaryTrack,
+                secondaryTrack: this.secondaryTrack
+              }).catch(() => {});
+            }
+            return true;
           }
-
-          if (this.currentVideoId) {
-            await db.saveTranscript(this.currentVideoId, {
-              cues: this.cues,
-              chunks: this.chunks,
-              trackInfo: this.selectedTrack,
-              primaryCues: this.primaryCues,
-              secondaryCues: this.secondaryCues,
-              primaryTrack: this.primaryTrack,
-              secondaryTrack: this.secondaryTrack
-            }).catch(() => {});
-          }
-          return true;
+        } catch (err) {
+          console.warn('[YT-Learn SubtitleManager] Auto-translated caption fetch failed:', err.message);
         }
-      } catch (err) {
-        console.warn('[YT-Learn SubtitleManager] Auto-translated caption fetch failed:', err.message);
       }
     }
 
-    this.failedLanguages.set(cacheKey, Date.now() + 8000);
+    this.failedLanguages.set(cacheKey, Date.now() + 60000);
     this.secondaryCues = [];
     this.secondaryTrack = null;
     this.hasSecondarySubtitles = false;
