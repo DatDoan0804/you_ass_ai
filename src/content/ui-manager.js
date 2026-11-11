@@ -1349,45 +1349,29 @@ export class UIManager {
     let html = `<option value="none" ${selectedLang === 'none' ? 'selected' : ''}>Sub 2: Off</option>`;
     const seen = new Set(['none']);
 
-    // Common languages shown first for instant usability
-    const common = [
-      { code: 'en', name: 'English' },
-      { code: 'es', name: 'Spanish' },
-      { code: 'vi', name: 'Vietnamese' },
-      { code: 'zh-Hans', name: 'Chinese (Simplified)' },
-      { code: 'zh-Hant', name: 'Chinese (Traditional)' },
-      { code: 'ja', name: 'Japanese' },
-      { code: 'ko', name: 'Korean' },
-      { code: 'fr', name: 'French' },
-      { code: 'de', name: 'German' },
-      { code: 'pt', name: 'Portuguese' },
-      { code: 'it', name: 'Italian' },
-      { code: 'ru', name: 'Russian' },
-      { code: 'ar', name: 'Arabic' },
-      { code: 'hi', name: 'Hindi' }
-    ];
-    for (const c of common) {
-      if (!seen.has(c.code)) {
-        seen.add(c.code);
-        html += `<option value="${c.code}" ${selectedLang === c.code ? 'selected' : ''}>Sub 2: ${c.name}</option>`;
-      }
+    const tracks = Array.isArray(this.availableTracks) ? this.availableTracks : [];
+    if (tracks.length === 0) {
+      html += `<option value="none" disabled>No Subtitles Available</option>`;
+      return html;
     }
 
-    // Available YouTube authored tracks for this video
-    for (const t of this.availableTracks) {
+    const prefix = typeof selectedLang === 'string' ? selectedLang.split('-')[0].toLowerCase() : '';
+    const hasMatch = tracks.some(
+      (t) => t.languageCode === selectedLang || (prefix && (t.languageCode || '').toLowerCase().startsWith(prefix))
+    );
+    const effectiveSelected = hasMatch ? selectedLang : tracks[0].languageCode;
+
+    for (const t of tracks) {
       if (t.languageCode && !seen.has(t.languageCode)) {
         seen.add(t.languageCode);
         const name = t.name || t.languageCode.toUpperCase();
-        html += `<option value="${this.escapeHtml(t.languageCode)}" ${selectedLang === t.languageCode ? 'selected' : ''}>Sub 2: ${this.escapeHtml(name)}</option>`;
-      }
-    }
-
-    // Additional translation languages
-    for (const tl of this.translationLanguages) {
-      if (tl.languageCode && !seen.has(tl.languageCode)) {
-        seen.add(tl.languageCode);
-        const name = tl.name || tl.languageCode.toUpperCase();
-        html += `<option value="${this.escapeHtml(tl.languageCode)}" ${selectedLang === tl.languageCode ? 'selected' : ''}>Sub 2: ${this.escapeHtml(name)}</option>`;
+        const kindLabel = t.kind === 'asr' ? ' (Auto)' : '';
+        const isSelected = selectedLang !== 'none' && (
+          t.languageCode === effectiveSelected ||
+          t.languageCode === selectedLang ||
+          (prefix && (t.languageCode || '').toLowerCase().startsWith(prefix))
+        );
+        html += `<option value="${this.escapeHtml(t.languageCode)}" ${isSelected ? 'selected' : ''}>Sub 2: ${this.escapeHtml(name)}${kindLabel}</option>`;
       }
     }
 
@@ -1422,36 +1406,16 @@ export class UIManager {
       `;
     }
 
-    let secondaryOptionsHtml = '';
-    if (this.availableTracks.length > 0) {
-      secondaryOptionsHtml += '<optgroup label="Available YouTube Video Tracks">';
+    let secondaryOptionsHtml = '<option value="none" ' + (s.secondarySubtitleLang === 'none' ? 'selected' : '') + '>Sub 2: Off</option>';
+    if (this.availableTracks && this.availableTracks.length > 0) {
       secondaryOptionsHtml += this.availableTracks
         .map(
           (t) =>
-            `<option value="${this.escapeHtml(t.languageCode)}" ${s.secondarySubtitleLang === t.languageCode ? 'selected' : ''}>${this.escapeHtml(t.name || t.languageCode)} (${this.escapeHtml(t.languageCode)})</option>`
+            `<option value="${this.escapeHtml(t.languageCode)}" ${s.secondarySubtitleLang === t.languageCode ? 'selected' : ''}>${this.escapeHtml(t.name || t.languageCode)} (${this.escapeHtml(t.languageCode)})${t.kind === 'asr' ? ' (Auto)' : ''}</option>`
         )
         .join('');
-      secondaryOptionsHtml += '</optgroup>';
-      secondaryOptionsHtml += '<optgroup label="YouTube Built-In Translations">';
-    }
-    secondaryOptionsHtml += `
-      <option value="en" ${s.secondarySubtitleLang === 'en' || !s.secondarySubtitleLang ? 'selected' : ''}>English</option>
-      <option value="es" ${s.secondarySubtitleLang === 'es' ? 'selected' : ''}>Spanish (Español)</option>
-      <option value="de" ${s.secondarySubtitleLang === 'de' ? 'selected' : ''}>German (Deutsch)</option>
-      <option value="fr" ${s.secondarySubtitleLang === 'fr' ? 'selected' : ''}>French (Français)</option>
-      <option value="ja" ${s.secondarySubtitleLang === 'ja' ? 'selected' : ''}>Japanese (日本語)</option>
-      <option value="zh-Hans" ${s.secondarySubtitleLang === 'zh-Hans' ? 'selected' : ''}>Chinese Simplified (简体)</option>
-      <option value="zh-Hant" ${s.secondarySubtitleLang === 'zh-Hant' ? 'selected' : ''}>Chinese Traditional (繁體)</option>
-      <option value="ko" ${s.secondarySubtitleLang === 'ko' ? 'selected' : ''}>Korean (한국어)</option>
-      <option value="pt" ${s.secondarySubtitleLang === 'pt' ? 'selected' : ''}>Portuguese (Português)</option>
-      <option value="it" ${s.secondarySubtitleLang === 'it' ? 'selected' : ''}>Italian (Italiano)</option>
-      <option value="ru" ${s.secondarySubtitleLang === 'ru' ? 'selected' : ''}>Russian (Русский)</option>
-      <option value="vi" ${s.secondarySubtitleLang === 'vi' ? 'selected' : ''}>Vietnamese (Tiếng Việt)</option>
-      <option value="ar" ${s.secondarySubtitleLang === 'ar' ? 'selected' : ''}>Arabic (العربية)</option>
-      <option value="hi" ${s.secondarySubtitleLang === 'hi' ? 'selected' : ''}>Hindi (हिन्दी)</option>
-    `;
-    if (this.availableTracks.length > 0) {
-      secondaryOptionsHtml += '</optgroup>';
+    } else {
+      secondaryOptionsHtml += '<option value="none" disabled>No tracks available for current video</option>';
     }
 
     wrapper.innerHTML = `
@@ -1721,6 +1685,11 @@ export class UIManager {
       if (this.dualSubtitlesContainer.parentElement !== player) {
         player.appendChild(this.dualSubtitlesContainer);
       }
+      const box = this.dualSubtitlesContainer.querySelector('#yt-learn-dual-subtitles-box');
+      if (box && (!this.dualSubtitlesContainer.dataset || !this.dualSubtitlesContainer.dataset.hasDragListeners)) {
+        if (this.dualSubtitlesContainer.dataset) this.dualSubtitlesContainer.dataset.hasDragListeners = 'true';
+        this.setupDraggableSubtitle(this.dualSubtitlesContainer, box);
+      }
       return this.dualSubtitlesContainer;
     }
 
@@ -1736,10 +1705,10 @@ export class UIManager {
         this.setupDraggableSubtitle(existing, box);
       }
       if (UIManager.isValidPercentPosition(this.settings.subtitlePosition) && (!existing.dataset || !existing.dataset.hasCustomPos)) {
-        existing.style.left = this.settings.subtitlePosition.left;
-        existing.style.top = this.settings.subtitlePosition.top;
-        existing.style.bottom = 'auto';
-        existing.style.transform = 'none';
+        existing.style.setProperty?.('left', this.settings.subtitlePosition.left, 'important');
+        existing.style.setProperty?.('top', this.settings.subtitlePosition.top, 'important');
+        existing.style.setProperty?.('bottom', 'auto', 'important');
+        existing.style.setProperty?.('transform', 'none', 'important');
         if (existing.dataset) existing.dataset.hasCustomPos = 'true';
       }
       return existing;
@@ -1756,10 +1725,10 @@ export class UIManager {
     `;
 
     if (UIManager.isValidPercentPosition(this.settings.subtitlePosition)) {
-      container.style.left = this.settings.subtitlePosition.left;
-      container.style.top = this.settings.subtitlePosition.top;
-      container.style.bottom = 'auto';
-      container.style.transform = 'none';
+      container.style.setProperty?.('left', this.settings.subtitlePosition.left, 'important');
+      container.style.setProperty?.('top', this.settings.subtitlePosition.top, 'important');
+      container.style.setProperty?.('bottom', 'auto', 'important');
+      container.style.setProperty?.('transform', 'none', 'important');
       if (container.dataset) container.dataset.hasCustomPos = 'true';
     }
 
@@ -1787,16 +1756,29 @@ export class UIManager {
     let startLeft = 0;
     let startTop = 0;
     let hasMoved = false;
+    let activePointerId = null;
 
-    const onMouseDown = (e) => {
-      if (e.button !== 0) return; // Left mouse click only
+    const onPointerDown = (e) => {
+      if (e.button !== undefined && e.button !== 0 && e.pointerType === 'mouse') return; // Left mouse click only
       const player = container.parentElement;
       if (!player) return;
 
+      // Prevent YouTube from capturing the click and toggling play/pause or text selection
+      e.preventDefault?.();
+      e.stopPropagation?.();
+
       isDragging = true;
+      this.isDraggingSubtitle = true;
       hasMoved = false;
       startX = e.clientX;
       startY = e.clientY;
+      activePointerId = e.pointerId ?? null;
+
+      if (e.pointerId !== undefined && typeof box.setPointerCapture === 'function') {
+        try {
+          box.setPointerCapture(e.pointerId);
+        } catch {}
+      }
 
       const playerRect = player.getBoundingClientRect?.() || { left: 0, top: 0, width: 640, height: 360 };
       const boxRect = container.getBoundingClientRect?.() || { left: 0, top: 0, width: 200, height: 40 };
@@ -1804,146 +1786,132 @@ export class UIManager {
       startLeft = (boxRect.left || 0) - (playerRect.left || 0);
       startTop = (boxRect.top || 0) - (playerRect.top || 0);
 
-      const onMouseMove = (moveEvent) => {
-        if (!isDragging) return;
-        const deltaX = moveEvent.clientX - startX;
-        const deltaY = moveEvent.clientY - startY;
-
-        if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
-          hasMoved = true;
-          box.classList.add?.('is-dragging');
-        }
-
-        const playerWidth = playerRect.width || player.offsetWidth || 640;
-        const playerHeight = playerRect.height || player.offsetHeight || 360;
-        const containerWidth = boxRect.width || container.offsetWidth || 200;
-        const containerHeight = boxRect.height || container.offsetHeight || 40;
-
-        let newLeft = startLeft + deltaX;
-        let newTop = startTop + deltaY;
-
-        // Clamp inside video player with 8px margin
-        newLeft = Math.max(8, Math.min(newLeft, playerWidth - containerWidth - 8));
-        newTop = Math.max(8, Math.min(newTop, playerHeight - containerHeight - 8));
-
-        const leftPercent = (newLeft / playerWidth) * 100;
-        const topPercent = (newTop / playerHeight) * 100;
-
-        container.style.left = `${leftPercent.toFixed(2)}%`;
-        container.style.top = `${topPercent.toFixed(2)}%`;
-        container.style.bottom = 'auto';
-        container.style.transform = 'none';
-        if (container.dataset) {
-          container.dataset.hasCustomPos = 'true';
-        }
-
-        this.customSubtitlePosition = {
-          left: `${leftPercent.toFixed(2)}%`,
-          top: `${topPercent.toFixed(2)}%`
-        };
-
-        moveEvent.stopPropagation?.();
-        moveEvent.preventDefault?.();
-      };
-
-      const onMouseUp = (upEvent) => {
-        if (!isDragging) return;
-        isDragging = false;
-        box.classList.remove?.('is-dragging');
-        document.removeEventListener('mousemove', onMouseMove, true);
-        document.removeEventListener('mouseup', onMouseUp, true);
-
-        if (hasMoved && this.customSubtitlePosition) {
-          this.settings.subtitlePosition = this.customSubtitlePosition;
-          this.callbacks.onSaveSettings?.({ subtitlePosition: this.customSubtitlePosition });
-          upEvent.stopPropagation?.();
-          upEvent.preventDefault?.();
-        }
-      };
-
-      document.addEventListener('mousemove', onMouseMove, true);
-      document.addEventListener('mouseup', onMouseUp, true);
+      container.style.transition = 'none';
     };
 
-    const onTouchStart = (e) => {
-      if (!e.touches || e.touches.length !== 1) return;
+    const onPointerMove = (e) => {
+      if (!isDragging) return;
+      e.preventDefault?.();
+      e.stopPropagation?.();
+
+      const deltaX = e.clientX - startX;
+      const deltaY = e.clientY - startY;
+
+      if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+        hasMoved = true;
+        box.classList.add?.('is-dragging');
+      }
+
+      if (!hasMoved) return;
+
       const player = container.parentElement;
       if (!player) return;
 
-      isDragging = true;
-      hasMoved = false;
-      const t = e.touches[0];
-      startX = t.clientX;
-      startY = t.clientY;
-
       const playerRect = player.getBoundingClientRect?.() || { left: 0, top: 0, width: 640, height: 360 };
       const boxRect = container.getBoundingClientRect?.() || { left: 0, top: 0, width: 200, height: 40 };
 
-      startLeft = (boxRect.left || 0) - (playerRect.left || 0);
-      startTop = (boxRect.top || 0) - (playerRect.top || 0);
+      const playerWidth = playerRect.width || player.offsetWidth || 640;
+      const playerHeight = playerRect.height || player.offsetHeight || 360;
+      const containerWidth = boxRect.width || container.offsetWidth || 200;
+      const containerHeight = boxRect.height || container.offsetHeight || 40;
 
-      const onTouchMove = (moveEvent) => {
-        if (!isDragging || !moveEvent.touches || moveEvent.touches.length !== 1) return;
-        const mt = moveEvent.touches[0];
-        const deltaX = mt.clientX - startX;
-        const deltaY = mt.clientY - startY;
+      let newLeft = startLeft + deltaX;
+      let newTop = startTop + deltaY;
 
-        hasMoved = true;
-        box.classList.add?.('is-dragging');
-        const playerWidth = playerRect.width || player.offsetWidth || 640;
-        const playerHeight = playerRect.height || player.offsetHeight || 360;
-        const containerWidth = boxRect.width || container.offsetWidth || 200;
-        const containerHeight = boxRect.height || container.offsetHeight || 40;
+      // Clamp inside video player with 8px margin
+      newLeft = Math.max(8, Math.min(newLeft, playerWidth - containerWidth - 8));
+      newTop = Math.max(8, Math.min(newTop, playerHeight - containerHeight - 8));
 
-        let newLeft = startLeft + deltaX;
-        let newTop = startTop + deltaY;
+      const leftPercent = (newLeft / playerWidth) * 100;
+      const topPercent = (newTop / playerHeight) * 100;
 
-        newLeft = Math.max(8, Math.min(newLeft, playerWidth - containerWidth - 8));
-        newTop = Math.max(8, Math.min(newTop, playerHeight - containerHeight - 8));
+      container.style.setProperty('left', `${leftPercent.toFixed(2)}%`, 'important');
+      container.style.setProperty('top', `${topPercent.toFixed(2)}%`, 'important');
+      container.style.setProperty('bottom', 'auto', 'important');
+      container.style.setProperty('transform', 'none', 'important');
+      if (container.dataset) {
+        container.dataset.hasCustomPos = 'true';
+      }
 
-        const leftPercent = (newLeft / playerWidth) * 100;
-        const topPercent = (newTop / playerHeight) * 100;
-
-        container.style.left = `${leftPercent.toFixed(2)}%`;
-        container.style.top = `${topPercent.toFixed(2)}%`;
-        container.style.bottom = 'auto';
-        container.style.transform = 'none';
-        if (container.dataset) {
-          container.dataset.hasCustomPos = 'true';
-        }
-
-        this.customSubtitlePosition = {
-          left: `${leftPercent.toFixed(2)}%`,
-          top: `${topPercent.toFixed(2)}%`
-        };
-
-        moveEvent.stopPropagation?.();
+      this.customSubtitlePosition = {
+        left: `${leftPercent.toFixed(2)}%`,
+        top: `${topPercent.toFixed(2)}%`
       };
+    };
 
-      const onTouchEnd = () => {
-        if (!isDragging) return;
-        isDragging = false;
-        box.classList.remove?.('is-dragging');
-        document.removeEventListener('touchmove', onTouchMove, true);
-        document.removeEventListener('touchend', onTouchEnd, true);
+    const onPointerUp = (e) => {
+      if (!isDragging) return;
+      isDragging = false;
+      this.isDraggingSubtitle = false;
+      box.classList.remove?.('is-dragging');
 
-        if (hasMoved && this.customSubtitlePosition) {
+      if (activePointerId !== null && typeof box.releasePointerCapture === 'function') {
+        try {
+          box.releasePointerCapture(activePointerId);
+        } catch {}
+        activePointerId = null;
+      }
+
+      container.style.transition = '';
+
+      if (hasMoved) {
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        if (this.customSubtitlePosition) {
           this.settings.subtitlePosition = this.customSubtitlePosition;
           this.callbacks.onSaveSettings?.({ subtitlePosition: this.customSubtitlePosition });
         }
-      };
-
-      document.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
-      document.addEventListener('touchend', onTouchEnd, true);
+      }
     };
+
+    // Attach Pointer Events
+    box.addEventListener?.('pointerdown', onPointerDown);
+    box.addEventListener?.('pointermove', onPointerMove);
+    box.addEventListener?.('pointerup', onPointerUp);
+    box.addEventListener?.('pointercancel', onPointerUp);
+
+    // Mouse fallback for environments without PointerEvent support
+    const onMouseDown = (e) => {
+      if (activePointerId !== null) return;
+      onPointerDown(e);
+      const onDocMove = (me) => onPointerMove(me);
+      const onDocUp = (ue) => {
+        document.removeEventListener('mousemove', onDocMove, true);
+        document.removeEventListener('mouseup', onDocUp, true);
+        onPointerUp(ue);
+      };
+      document.addEventListener('mousemove', onDocMove, true);
+      document.addEventListener('mouseup', onDocUp, true);
+    };
+    box.addEventListener?.('mousedown', onMouseDown);
+
+    // Suppress native drag-and-drop so browser never drops into ghost drag
+    box.addEventListener?.('dragstart', (e) => {
+      e.preventDefault?.();
+      e.stopPropagation?.();
+    });
+
+    // Suppress click if user dragged the subtitle box so YouTube video doesn't pause
+    box.addEventListener?.('click', (e) => {
+      if (hasMoved) {
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        hasMoved = false;
+      }
+    }, true);
 
     const onDblClick = (e) => {
       e.stopPropagation?.();
       e.preventDefault?.();
+      container.style.removeProperty?.('top');
+      container.style.removeProperty?.('bottom');
+      container.style.removeProperty?.('left');
+      container.style.removeProperty?.('transform');
       container.style.left = '50%';
       container.style.bottom = '';
       container.style.top = '';
       container.style.transform = 'translateX(-50%)';
+      container.style.transition = '';
       if (container.dataset) {
         delete container.dataset.hasCustomPos;
       }
@@ -1952,8 +1920,6 @@ export class UIManager {
       this.callbacks.onSaveSettings?.({ subtitlePosition: null });
     };
 
-    box.addEventListener?.('mousedown', onMouseDown);
-    box.addEventListener?.('touchstart', onTouchStart, { passive: true });
     box.addEventListener?.('dblclick', onDblClick);
   }
 
@@ -2001,7 +1967,9 @@ export class UIManager {
     }
 
     if (!displayText) {
-      box.style.display = 'none';
+      if (!this.isDraggingSubtitle) {
+        box.style.display = 'none';
+      }
       return;
     }
 

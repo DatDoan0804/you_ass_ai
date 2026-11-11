@@ -468,9 +468,26 @@ export class YouTubeLearningAssistantApp {
       }
     }).catch(() => {});
 
-    const demandSecondaryLang = (this.settings.enableDualSubtitles !== false)
+    let demandSecondaryLang = (this.settings.enableDualSubtitles !== false)
       ? (this.settings.secondarySubtitleLang || 'en')
       : 'none';
+
+    // If available tracks are known and the chosen language is not available on this video,
+    // match by prefix (e.g. en matches en-US) or select the first available track
+    const videoTracks = this.videoMetadata?.captionTracks;
+    if (demandSecondaryLang !== 'none' && Array.isArray(videoTracks) && videoTracks.length > 0) {
+      const targetPrefix = demandSecondaryLang.split('-')[0].toLowerCase();
+      const matched = videoTracks.find(
+        (t) => (t.languageCode || '').toLowerCase() === demandSecondaryLang.toLowerCase() ||
+               (t.languageCode || '').toLowerCase().startsWith(targetPrefix)
+      );
+      if (matched) {
+        demandSecondaryLang = matched.languageCode;
+      } else {
+        demandSecondaryLang = videoTracks[0].languageCode;
+      }
+      this.settings.secondarySubtitleLang = demandSecondaryLang;
+    }
 
     const subtitleResult = await this.subtitleManager.loadSubtitlesForVideo(
       this.videoMetadata,

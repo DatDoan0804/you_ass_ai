@@ -1850,18 +1850,20 @@ This is subtitle line 2.
     assert.ok(vtt.includes('Second subtitle line'));
   });
 
-  await test('UIManager.buildSub2OptionsHtml puts common languages (English, Spanish, Vietnamese) at the top', () => {
+  await test('UIManager.buildSub2OptionsHtml shows ONLY available video tracks and excludes non-working auto-translations', () => {
     const ui = new UIManager({});
-    ui.availableTracks = [{ languageCode: 'zh-Hant', name: 'Chinese (Traditional)' }];
-    ui.translationLanguages = [{ languageCode: 'ab', name: 'Abkhazian' }];
+    ui.availableTracks = [
+      { languageCode: 'en', name: 'English' },
+      { languageCode: 'zh-Hant', name: 'Chinese (Traditional)' }
+    ];
+    ui.translationLanguages = [{ languageCode: 'ab', name: 'Abkhazian' }, { languageCode: 'es', name: 'Spanish' }];
 
     const html = ui.buildSub2OptionsHtml('en');
-    assert.ok(html.includes('value="none"'));
-    const enIndex = html.indexOf('value="en"');
-    const abIndex = html.indexOf('value="ab"');
-    assert.ok(enIndex > 0, 'English option is present');
-    assert.ok(abIndex > 0, 'Abkhazian option is present');
-    assert.ok(enIndex < abIndex, 'English appears before obscure translation languages like Abkhazian');
+    assert.ok(html.includes('value="none"'), 'Off option is present');
+    assert.ok(html.includes('value="en"'), 'Available English track is present');
+    assert.ok(html.includes('value="zh-Hant"'), 'Available Chinese track is present');
+    assert.strictEqual(html.includes('value="ab"'), false, 'Auto-translated Abkhazian is strictly excluded');
+    assert.strictEqual(html.includes('value="es"'), false, 'Non-existent Spanish track is strictly excluded');
   });
 
   console.log('\n18. Draggable Subtitles, Gemini AI Breakpoint Planning & Universal Video Coverage');
@@ -1950,14 +1952,36 @@ This is subtitle line 2.
         getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 450 })
       },
       getBoundingClientRect: () => ({ left: 300, top: 350, width: 200, height: 40 }),
-      style: { left: '50%', top: '', bottom: '104px', transform: 'translateX(-50%)' },
+      style: {
+        left: '50%',
+        top: '',
+        bottom: '104px',
+        transform: 'translateX(-50%)',
+        setProperty(prop, val) { this[prop] = val; },
+        removeProperty(prop) { delete this[prop]; }
+      },
       dataset: {}
     };
 
     ui.setupDraggableSubtitle(mockContainer, mockBox);
+    assert.ok(listeners.has('pointerdown'), 'Pointerdown listener attached');
     assert.ok(listeners.has('mousedown'), 'Mousedown listener attached');
-    assert.ok(listeners.has('touchstart'), 'Touchstart listener attached');
     assert.ok(listeners.has('dblclick'), 'Double-click listener attached');
+
+    // Simulate pointer drag movement
+    const pointerDown = listeners.get('pointerdown');
+    const pointerMove = listeners.get('pointermove');
+    const pointerUp = listeners.get('pointerup');
+
+    pointerDown({ clientX: 350, clientY: 360, pointerId: 1, preventDefault: () => {}, stopPropagation: () => {} });
+    pointerMove({ clientX: 450, clientY: 260, preventDefault: () => {}, stopPropagation: () => {} });
+    pointerUp({ preventDefault: () => {}, stopPropagation: () => {} });
+
+    assert.ok(mockContainer.style.left.includes('%'), 'Left percentage position updated');
+    assert.ok(mockContainer.style.top.includes('%'), 'Top percentage position updated');
+    assert.strictEqual(mockContainer.style.bottom, 'auto');
+    assert.strictEqual(mockContainer.style.transform, 'none');
+    assert.ok(savedSettings?.subtitlePosition, 'Settings saved new drag position');
 
     // Simulate double click to reset position
     const dblClickHandler = listeners.get('dblclick');

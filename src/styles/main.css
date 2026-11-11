@@ -1076,6 +1076,7 @@
   font-weight: 600;
   text-rendering: optimizeLegibility;
   word-break: break-word;
+  pointer-events: none; /* Passes mouse/pointer events directly to the draggable box */
 }
 
 /* Primary Subtitle Line: Kept display: none in companion mode so YouTube's native captions show as the main subtitle */
