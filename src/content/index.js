@@ -289,6 +289,8 @@ export class YouTubeLearningAssistantApp {
     this.lastSubtitleResult = null;
     this.isActivityActive = false;
     this.chunkSummaries = new Map();
+    this._isFetchingSecondary = false;
+    this._lastSecondaryFetchAttempt = 0;
 
     this.videoController = new VideoController({
       onVideoChanged: this.handleVideoChanged.bind(this),
@@ -434,6 +436,8 @@ export class YouTubeLearningAssistantApp {
     this.lastSubtitleResult = null;
     this.isActivityActive = false;
     this.chunkSummaries.clear();
+    this._isFetchingSecondary = false;
+    this._lastSecondaryFetchAttempt = 0;
     if (videoId) {
       this.activityGenerator.resetHistory(videoId);
     }
@@ -666,6 +670,29 @@ export class YouTubeLearningAssistantApp {
 
     // Dual Subtitles Update (renders subtitles on video whenever enabled)
     if (this.settings.enableDualSubtitles !== false && this.subtitleManager) {
+      if (
+        !this.subtitleManager.hasSecondarySubtitles &&
+        this.currentVideoId &&
+        this.settings.secondarySubtitleLang !== 'none' &&
+        !this._isFetchingSecondary &&
+        (Date.now() - (this._lastSecondaryFetchAttempt || 0) > 4000)
+      ) {
+        this._lastSecondaryFetchAttempt = Date.now();
+        this._isFetchingSecondary = true;
+        this.subtitleManager.downloadSecondaryTrackOnDemand(
+          this.settings.secondarySubtitleLang || 'en',
+          this.videoMetadata || { videoId: this.currentVideoId }
+        ).then((ok) => {
+          if (ok) {
+            const cur = this.videoController.getCurrentTime();
+            const cues = this.subtitleManager.getActiveDualCues(cur);
+            this.uiManager.renderDualSubtitles(cues, this.settings);
+          }
+        }).catch(() => {}).finally(() => {
+          this._isFetchingSecondary = false;
+        });
+      }
+
       const activeCues = this.subtitleManager.getActiveDualCues(currentTime);
       this.uiManager.renderDualSubtitles(activeCues, this.settings);
     } else {

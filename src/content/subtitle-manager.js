@@ -52,7 +52,7 @@ export class SubtitleManager {
     // In-memory cache & deduplication to prevent server block
     this.trackCache = new Map();
     this.failedUrls = new Set();
-    this.failedLanguages = new Set();
+    this.failedLanguages = new Map();
     this.inFlightRequests = new Map();
     this.localServerOfflineUntil = 0;
   }
@@ -111,8 +111,10 @@ export class SubtitleManager {
     const cached = await db.getTranscript(videoId);
     if (cached && Array.isArray(cached.cues) && cached.cues.length > 0) {
       this.cues = cached.cues;
-      this.primaryCues = cached.primaryCues || cached.cues;
-      this.secondaryCues = cached.secondaryCues || [];
+      this.primaryCues = cached.primaryCues || [];
+      this.secondaryCues = (cached.secondaryCues && cached.secondaryCues.length > 0)
+        ? cached.secondaryCues
+        : (cached.cues || []);
       this.chunks = SubtitleManager.buildSemanticChunks(
         this.cues,
         chapters,
@@ -328,6 +330,7 @@ export class SubtitleManager {
             isLocalServer: true
           };
           this.hasSecondarySubtitles = true;
+          this.failedLanguages.delete?.(cacheKey);
           this.trackCache.set(cacheKey, this.secondaryCues);
           this.trackCache.set(`${cacheKey}_track`, this.secondaryTrack);
           this.log(`[SubtitleManager] Secondary subtitle loaded from local terminal server: ${this.secondaryCues.length} entries (${targetLang})`);
@@ -355,11 +358,11 @@ export class SubtitleManager {
           }
           return true;
         } else if (localResult && (localResult.isServerOffline || localResult.error)) {
-          this.localServerOfflineUntil = Date.now() + 15000;
+          this.localServerOfflineUntil = Date.now() + 4000;
           this.log(`[SubtitleManager] Local subtitle server unavailable (${localResult.error || 'offline'}). Seamless fallback to browser tracks.`);
         }
       } catch (localErr) {
-        this.localServerOfflineUntil = Date.now() + 15000;
+        this.localServerOfflineUntil = Date.now() + 4000;
         this.log(`[SubtitleManager] Local server connection failed: ${localErr.message}. Seamless fallback to browser tracks.`);
       }
     }
@@ -428,7 +431,8 @@ export class SubtitleManager {
       return this.hasSecondarySubtitles;
     }
 
-    if (this.failedLanguages.has(cacheKey)) {
+    const failedUntil = this.failedLanguages.get?.(cacheKey) || (this.failedLanguages.has?.(cacheKey) ? Infinity : 0);
+    if (failedUntil && Date.now() < failedUntil) {
       return false;
     }
 
@@ -460,9 +464,20 @@ export class SubtitleManager {
             isTranslated: false
           };
           this.hasSecondarySubtitles = true;
+          this.failedLanguages.delete?.(cacheKey);
           this.trackCache.set(cacheKey, this.secondaryCues);
           this.trackCache.set(`${cacheKey}_track`, this.secondaryTrack);
           this.log(`[Breakpoint] Secondary caption track loaded: ${this.secondaryCues.length} entries (${directTrack.languageCode})`);
+
+          if (!this.cues || this.cues.length === 0) {
+            this.cues = this.secondaryCues;
+            this.chunks = SubtitleManager.buildSemanticChunks(
+              this.cues,
+              metadata?.chapters || [],
+              metadata?.targetChunkSeconds || 30
+            );
+            this.hasSubtitles = true;
+          }
 
           if (this.currentVideoId) {
             await db.saveTranscript(this.currentVideoId, {
@@ -509,9 +524,20 @@ export class SubtitleManager {
             isTranslated: true
           };
           this.hasSecondarySubtitles = true;
+          this.failedLanguages.delete?.(cacheKey);
           this.trackCache.set(cacheKey, this.secondaryCues);
           this.trackCache.set(`${cacheKey}_track`, this.secondaryTrack);
           this.log(`[Breakpoint] Secondary auto-translated captions loaded: ${this.secondaryCues.length} entries (${effectiveSecondaryLang})`);
+
+          if (!this.cues || this.cues.length === 0) {
+            this.cues = this.secondaryCues;
+            this.chunks = SubtitleManager.buildSemanticChunks(
+              this.cues,
+              metadata?.chapters || [],
+              metadata?.targetChunkSeconds || 30
+            );
+            this.hasSubtitles = true;
+          }
 
           if (this.currentVideoId) {
             await db.saveTranscript(this.currentVideoId, {
@@ -531,7 +557,7 @@ export class SubtitleManager {
       }
     }
 
-    this.failedLanguages.add(cacheKey);
+    this.failedLanguages.set(cacheKey, Date.now() + 8000);
     this.secondaryCues = [];
     this.secondaryTrack = null;
     this.hasSecondarySubtitles = false;
@@ -575,7 +601,10 @@ export class SubtitleManager {
     const primaryCue = this.primaryCues && this.primaryCues.length > 0
       ? SubtitleManager.findActiveCue(this.primaryCues, currentTime)
       : null;
-    const secondaryCue = SubtitleManager.findActiveCue(this.secondaryCues, currentTime);
+    const secondarySource = (this.secondaryCues && this.secondaryCues.length > 0)
+      ? this.secondaryCues
+      : (this.cues && this.cues.length > 0 ? this.cues : []);
+    const secondaryCue = SubtitleManager.findActiveCue(secondarySource, currentTime);
 
     let primaryText = primaryCue ? primaryCue.text.trim() : '';
     let secondaryText = secondaryCue ? secondaryCue.text.trim() : '';

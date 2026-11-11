@@ -19,7 +19,7 @@ import { ActivityGenerator } from '../src/ai/activity-generator.js';
 import { AnswerEvaluator } from '../src/ai/answer-evaluator.js';
 import { ContentAnalyzer } from '../src/ai/content-analyzer.js';
 import { SubtitleManager } from '../src/content/subtitle-manager.js';
-import { Database, DEFAULT_SETTINGS } from '../src/storage/database.js';
+import { Database, DEFAULT_SETTINGS, db } from '../src/storage/database.js';
 import { UIManager } from '../src/content/ui-manager.js';
 import { VideoController } from '../src/content/video-controller.js';
 
@@ -2004,6 +2004,98 @@ This is subtitle line 2.
       assert.strictEqual(opt.includes('outdated idea that is no longer used'), false, 'No generic filler distractor');
       assert.strictEqual(opt.includes('satisfying the primary condition to achieve the expected result'), false, 'No robotic template option');
     });
+  });
+
+  await testAsync('SubtitleManager restores secondary subtitles correctly from cache when primaryCues was omitted', async () => {
+    const mgr = new SubtitleManager(async () => ({ ok: true }));
+    // Mock db.getTranscript returning legacy cache with only cues
+    const origGet = db.getTranscript;
+    db.getTranscript = async () => ({
+      cues: [{ start: 0, end: 5, text: 'Cached subtitle text' }],
+      trackInfo: { languageCode: 'en', name: 'English' }
+    });
+
+    try {
+      const res = await mgr.loadSubtitlesForVideo({ videoId: 'cachedVid' }, 'auto', 'en');
+      assert.strictEqual(res.hasSubtitles, true);
+      assert.strictEqual(mgr.hasSecondarySubtitles, true);
+      assert.strictEqual(mgr.secondaryCues.length, 1);
+      assert.strictEqual(mgr.secondaryCues[0].text, 'Cached subtitle text');
+      // When primaryCues was empty in cache, primaryCues is [] and does NOT duplicate secondaryCues
+      assert.strictEqual(mgr.primaryCues.length, 0);
+
+      // Verify getActiveDualCues returns the secondary cue without suppression
+      const active = mgr.getActiveDualCues(2.5);
+      assert.strictEqual(active.secondaryText, 'Cached subtitle text');
+      assert.strictEqual(active.hasActiveText, true);
+    } finally {
+      db.getTranscript = origGet;
+    }
+  });
+
+  await test('UIManager.renderDualSubtitles displays companion subtitle with primaryCue fallback when secondaryText is empty', () => {
+    const ui = new UIManager({});
+    ui.settings = { enabled: true, enableDualSubtitles: true, secondarySubtitleLang: 'en' };
+
+    let displayedText = '';
+    let boxDisplay = 'none';
+
+    // Mock DOM elements
+    ui.ensureDualSubtitlesMount = () => ({
+      classList: { contains: () => true, add: () => {}, remove: () => {} },
+      querySelector: (sel) => {
+        if (sel === '#yt-learn-dual-subtitles-box') {
+          return {
+            style: {
+              get display() { return boxDisplay; },
+              set display(val) { boxDisplay = val; }
+            }
+          };
+        }
+        if (sel === '#yt-learn-sub-primary') {
+          return { style: {}, textContent: '' };
+        }
+        if (sel === '#yt-learn-sub-secondary') {
+          return {
+            style: {},
+            get textContent() { return displayedText; },
+            set textContent(val) { displayedText = val; }
+          };
+        }
+        return null;
+      }
+    });
+
+    // Case 1: normal secondaryText present
+    ui.renderDualSubtitles({ secondaryText: 'Hello World' });
+    assert.strictEqual(boxDisplay, 'inline-flex');
+    assert.strictEqual(displayedText, 'Hello World');
+
+    // Case 2: secondaryText empty, but primaryCue loaded internally
+    ui.renderDualSubtitles({ secondaryText: '', primaryCue: { text: 'Fallback Cue' } });
+    assert.strictEqual(boxDisplay, 'inline-flex');
+    assert.strictEqual(displayedText, 'Fallback Cue');
+
+    // Case 3: both empty -> box hides
+    ui.renderDualSubtitles({ secondaryText: '', primaryCue: null });
+    assert.strictEqual(boxDisplay, 'none');
+  });
+
+  await testAsync('SubtitleManager.loadSecondaryTrack failure updates failedLanguages timestamp map without throwing TypeError', async () => {
+    const mgr = new SubtitleManager(async () => {
+      throw new Error('Network failure');
+    });
+    mgr.currentVideoId = 'failVid';
+
+    const ok = await mgr.loadSecondaryTrack(
+      [{ languageCode: 'es', baseUrl: 'https://www.youtube.com/api/timedtext?v=failVid&lang=es' }],
+      'es'
+    );
+    assert.strictEqual(ok, false);
+    assert.strictEqual(mgr.hasSecondarySubtitles, false);
+    // Ensure failedLanguages is a Map and has the timestamp set
+    const failedUntil = mgr.failedLanguages.get('failVid_es');
+    assert.ok(typeof failedUntil === 'number' && failedUntil > Date.now(), 'failedLanguages holds future timestamp');
   });
 
   console.log(`\n========================================`);

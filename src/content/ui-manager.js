@@ -1689,6 +1689,24 @@ export class UIManager {
     this.renderDedicatedBar();
   }
 
+  static isValidPercentPosition(pos) {
+    if (!pos || typeof pos !== 'object') return false;
+    const leftNum = parseFloat(pos.left);
+    const topNum = parseFloat(pos.top);
+    return (
+      typeof pos.left === 'string' &&
+      pos.left.endsWith('%') &&
+      Number.isFinite(leftNum) &&
+      leftNum >= 2 &&
+      leftNum <= 95 &&
+      typeof pos.top === 'string' &&
+      pos.top.endsWith('%') &&
+      Number.isFinite(topNum) &&
+      topNum >= 2 &&
+      topNum <= 95
+    );
+  }
+
   ensureDualSubtitlesMount() {
     if (typeof document === 'undefined') return null;
 
@@ -1712,12 +1730,17 @@ export class UIManager {
         player.appendChild(existing);
       }
       this.dualSubtitlesContainer = existing;
-      if (this.settings.subtitlePosition?.left && this.settings.subtitlePosition?.top && !existing.dataset.hasCustomPos) {
+      const box = existing.querySelector('#yt-learn-dual-subtitles-box');
+      if (box && (!existing.dataset || !existing.dataset.hasDragListeners)) {
+        if (existing.dataset) existing.dataset.hasDragListeners = 'true';
+        this.setupDraggableSubtitle(existing, box);
+      }
+      if (UIManager.isValidPercentPosition(this.settings.subtitlePosition) && (!existing.dataset || !existing.dataset.hasCustomPos)) {
         existing.style.left = this.settings.subtitlePosition.left;
         existing.style.top = this.settings.subtitlePosition.top;
         existing.style.bottom = 'auto';
         existing.style.transform = 'none';
-        existing.dataset.hasCustomPos = 'true';
+        if (existing.dataset) existing.dataset.hasCustomPos = 'true';
       }
       return existing;
     }
@@ -1732,15 +1755,18 @@ export class UIManager {
       </div>
     `;
 
-    if (this.settings.subtitlePosition?.left && this.settings.subtitlePosition?.top) {
+    if (UIManager.isValidPercentPosition(this.settings.subtitlePosition)) {
       container.style.left = this.settings.subtitlePosition.left;
       container.style.top = this.settings.subtitlePosition.top;
       container.style.bottom = 'auto';
       container.style.transform = 'none';
-      container.dataset.hasCustomPos = 'true';
+      if (container.dataset) container.dataset.hasCustomPos = 'true';
     }
 
     const box = container.querySelector('#yt-learn-dual-subtitles-box');
+    if (container.dataset) {
+      container.dataset.hasDragListeners = 'true';
+    }
     this.setupDraggableSubtitle(container, box);
 
     player.appendChild(container);
@@ -1778,9 +1804,6 @@ export class UIManager {
       startLeft = (boxRect.left || 0) - (playerRect.left || 0);
       startTop = (boxRect.top || 0) - (playerRect.top || 0);
 
-      box.classList.add?.('is-dragging');
-      e.stopPropagation?.();
-
       const onMouseMove = (moveEvent) => {
         if (!isDragging) return;
         const deltaX = moveEvent.clientX - startX;
@@ -1788,6 +1811,7 @@ export class UIManager {
 
         if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
           hasMoved = true;
+          box.classList.add?.('is-dragging');
         }
 
         const playerWidth = playerRect.width || player.offsetWidth || 640;
@@ -1858,9 +1882,6 @@ export class UIManager {
       startLeft = (boxRect.left || 0) - (playerRect.left || 0);
       startTop = (boxRect.top || 0) - (playerRect.top || 0);
 
-      box.classList.add?.('is-dragging');
-      e.stopPropagation?.();
-
       const onTouchMove = (moveEvent) => {
         if (!isDragging || !moveEvent.touches || moveEvent.touches.length !== 1) return;
         const mt = moveEvent.touches[0];
@@ -1868,6 +1889,7 @@ export class UIManager {
         const deltaY = mt.clientY - startY;
 
         hasMoved = true;
+        box.classList.add?.('is-dragging');
         const playerWidth = playerRect.width || player.offsetWidth || 640;
         const playerHeight = playerRect.height || player.offsetHeight || 360;
         const containerWidth = boxRect.width || container.offsetWidth || 200;
@@ -1973,13 +1995,18 @@ export class UIManager {
       primaryEl.style.display = 'none';
     }
 
-    if (!secondaryText) {
+    let displayText = secondaryText;
+    if (!displayText && activeCues?.primaryCue?.text) {
+      displayText = activeCues.primaryCue.text.trim();
+    }
+
+    if (!displayText) {
       box.style.display = 'none';
       return;
     }
 
     box.style.display = 'inline-flex';
-    secondaryEl.textContent = secondaryText;
+    secondaryEl.textContent = displayText;
     secondaryEl.style.display = 'block';
   }
 

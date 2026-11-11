@@ -109,7 +109,7 @@ async function handleMessage(message, tabId) {
       const url = `http://127.0.0.1:${port}/subtitles?videoId=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}`;
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout for terminal yt-dlp downloads
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout for terminal yt-dlp downloads and translation
         const res = await fetch(url, { signal: controller.signal });
         clearTimeout(timeoutId);
         if (!res.ok) {
