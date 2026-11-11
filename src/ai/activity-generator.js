@@ -466,7 +466,7 @@ export class ActivityGenerator {
     const timeRange = `${Math.floor(chunk.start / 60)}:${String(Math.floor(chunk.start % 60)).padStart(2, '0')} – ${Math.floor(chunk.end / 60)}:${String(Math.floor(chunk.end % 60)).padStart(2, '0')}`;
     const isProgramming = (sectionAnalysis.subjectCategory || 'general') === 'programming';
 
-    let title = 'Deep Comprehension Check';
+    let title = 'Quick Check';
     let prompt = '';
     let codeOrScenarioSnippet = '';
     let options = [];
@@ -475,38 +475,27 @@ export class ActivityGenerator {
 
     switch (type) {
       case 'multiple_choice': {
-        title = 'Conceptual Reasoning & Detail Check';
-        if (terms.length >= 2 && termA.toLowerCase() !== termB.toLowerCase()) {
-          prompt = `Connecting the explanation at ${timeRange} regarding "${conceptName}", how do ${termA} and ${termB} interact to determine the outcome described in this segment?`;
-        } else {
-          prompt = `Connecting the explanation at ${timeRange} regarding "${conceptName}", what primary principle governs the outcome described by the instructor?`;
-        }
+        title = 'Quick Check';
+        prompt = `What was the main point explained about "${conceptName}"?`;
 
         let synthesizedCorrect;
         if (hasDistinctPair) {
-          synthesizedCorrect = `${premiseSentence.replace(/[.]+$/, '')}, which directly governs how ${consequenceSentence.charAt(0).toLowerCase() + consequenceSentence.slice(1)}`;
-        } else if (text.length > 30) {
-          synthesizedCorrect = `The instructor demonstrates that ${conceptName} requires satisfying the primary condition to achieve the expected result.`;
+          synthesizedCorrect = `${premiseSentence.replace(/[.]+$/, '')}, showing how ${consequenceSentence.charAt(0).toLowerCase() + consequenceSentence.slice(1)}`;
+        } else if (text.length > 25) {
+          synthesizedCorrect = premiseSentence;
         } else {
-          synthesizedCorrect = concludingOrFull(consequenceSentence);
+          synthesizedCorrect = `The speaker demonstrates how "${conceptName}" works in everyday situations.`;
         }
 
-        const correctText = synthesizedCorrect.length <= 165 ? synthesizedCorrect : `${synthesizedCorrect.slice(0, 162)}...`;
+        const correctText = synthesizedCorrect.length <= 140 ? synthesizedCorrect : `${synthesizedCorrect.slice(0, 137)}...`;
 
-        let distractor1, distractor2, distractor3;
-        if (isProgramming) {
-          distractor1 = `While ${termA} initializes the setup, ${termB} alters the outcome only when the outer boundary condition is omitted.`;
-          distractor2 = `${termB} defines the primary execution state, whereas ${termA} is only evaluated if an explicit exception occurs.`;
-          distractor3 = `Both ${termA} and ${termB} execute independently in parallel without affecting the resulting behavior of ${termC}.`;
-        } else {
-          distractor1 = `While ${termA} establishes the initial setup, ${termB} only affects the outcome when the primary constraint is omitted.`;
-          distractor2 = `${termB} dictates the outcome independently, whereas ${termA} is merely an optional detail that does not change the result.`;
-          distractor3 = `Both ${termA} and ${termB} operate independently without directly influencing each other or the overall result.`;
-        }
+        const distractor1 = `It was mentioned as an outdated idea that is no longer used today.`;
+        const distractor2 = `It only applies in rare situations and has little impact on the topic.`;
+        const distractor3 = `It works in the opposite way from what was described here.`;
 
         const allOptions = [correctText, distractor1, distractor2, distractor3];
         const targetIndex = chunkIndex % 4;
-        
+
         if (targetIndex !== 0) {
           const temp = allOptions[targetIndex];
           allOptions[targetIndex] = correctText;
@@ -515,82 +504,57 @@ export class ActivityGenerator {
 
         options = allOptions;
         correctOptionIndices = [targetIndex];
-        distractorRationale = `The incorrect options represent plausible misunderstandings: they either invert the operational relationship between factors, assume conditional-only relevance, or assume factors operate independently without interaction.`;
+        distractorRationale = `The correct option directly reflects what was stated in the video. The other options contradict or minimize the speaker's main points.`;
         break;
       }
 
       case 'spot_the_mistake': {
-        title = 'Diagnose the Subtle Misconception';
-        let subtleFlaw;
-        if (hasDistinctPair) {
-          subtleFlaw = `${premiseSentence}. However, even if ${termB} is omitted or modified, ${consequenceSentence.replace(/\b(immediately|stops|undefined|retains|modular)\b/gi, 'still continues running unchanged')}`;
-        } else if (isProgramming) {
-          subtleFlaw = `In "${conceptName}", modifying ${termA} has no effect on ${termB} because the underlying state remains unchanged during execution.`;
-        } else {
-          subtleFlaw = `In "${conceptName}", the core principle described by the instructor applies identically in all cases, regardless of whether the primary condition is met.`;
-        }
-        codeOrScenarioSnippet = `Peer's Claim (${timeRange}):\n"${subtleFlaw}"`;
-        prompt = `A viewer watched "${conceptName}" and wrote the claim above. Identify the subtle flaw or misconception in their reasoning and explain what actually happens.`;
+        title = 'Spot the Error';
+        codeOrScenarioSnippet = `Viewer Comment:\n"In ${conceptName}, this principle has no real effect and can be safely ignored."`;
+        prompt = `A viewer left the comment above about "${conceptName}". In simple words, why is that incorrect based on the video?`;
         break;
       }
 
       case 'prediction': {
-        title = 'Predict the Outcome & Edge Case';
-        codeOrScenarioSnippet = hasDistinctPair
-          ? `Context established (${timeRange}):\n"${premiseSentence} ${mechanismSentence}"`
-          : `Segment context (${timeRange}):\n"${premiseSentence}"`;
-        prompt = `Given what the instructor sets up in "${conceptName}" (${timeRange}), what outcome or consequence is expected to occur next, and what causal step explains that result?`;
+        title = 'What Happens Next?';
+        prompt = `Based on what the creator just explained in "${conceptName}", what do you expect to happen next?`;
         break;
       }
 
       case 'practical_application': {
-        title = 'Scenario Application & Problem Solving';
-        codeOrScenarioSnippet = `Concept from segment (${timeRange}):\n"${mechanismSentence}"`;
-        if (isProgramming) {
-          prompt = `Suppose you are designing a system where ${termA} changes dynamically. How would you apply the exact principle of "${conceptName}" from this segment to prevent unintended side effects on ${termB}?`;
-        } else {
-          prompt = `Suppose you need to apply the principle of "${conceptName}" in a real-world scenario. How would you use what the instructor explained between ${timeRange} to ensure the desired outcome and avoid common errors?`;
-        }
+        title = 'Real-World Example';
+        prompt = `How would you use or notice "${conceptName}" in a real-life situation?`;
         break;
       }
 
       case 'critical_thinking': {
-        title = 'Cause, Effect & Counterfactual Analysis';
-        if (hasDistinctPair) {
-          prompt = `In "${conceptName}" (${timeRange}), the instructor explains how "${premiseSentence.slice(0, 80)}..." relates to "${consequenceSentence.slice(0, 80)}...". Why does the first condition lead to the second, and what specific failure would occur if that condition were altered?`;
-        } else {
-          prompt = `Based on the segment covering "${conceptName}" (${timeRange}), why is this principle essential to the topic, and what specific failure or problem occurs if its core requirements are altered?`;
-        }
+        title = 'Think It Over';
+        prompt = `Based on what was just shown about "${conceptName}", why is this principle essential to understanding the topic?`;
         break;
       }
 
       case 'compare_concepts': {
-        title = 'Distinguish & Compare Mechanisms';
-        if (terms.length >= 2 && termA.toLowerCase() !== termB.toLowerCase()) {
-          prompt = `Based on the explanation covered in "${conceptName}" (${timeRange}), what is the key distinction between ${termA} and ${termB}, and when would confusing the two lead to an error?`;
-        } else {
-          prompt = `Based on the explanation in "${conceptName}" (${timeRange}), how does the instructor distinguish this concept from common alternatives, and why is that distinction important?`;
-        }
+        title = 'Compare & Contrast';
+        prompt = `How does the speaker compare "${conceptName}" with other ideas in this video?`;
         break;
       }
 
       case 'connect_concepts': {
-        title = 'Cross-Section Synthesis';
-        const earlierRef = previousChunkSummary
-          ? `the earlier topic ("${previousChunkSummary.slice(0, 80).replace(/[.]+$/, '')}...")`
-          : 'the foundational premise introduced earlier in the lesson';
-        prompt = `How does the explanation of "${conceptName}" in this segment (${timeRange}) depend on or build upon ${earlierRef}, and how do both ideas connect?`;
+        title = 'Connecting the Dots';
+        prompt = `How does "${conceptName}" connect back to the earlier parts of this video?`;
+        break;
+      }
+
+      case 'teach_back': {
+        title = 'Explain in Plain Words';
+        prompt = `How would you explain "${conceptName}" in simple words to a friend who hasn't watched this video?`;
         break;
       }
 
       case 'short_answer':
       default: {
-        title = 'Multi-Fact Synthesis Question';
-        if (terms.length >= 2 && termA.toLowerCase() !== termB.toLowerCase()) {
-          prompt = `In "${conceptName}" (${timeRange}), how does ${termA} relate to or affect ${termB}, and what happens if the core requirement is omitted?`;
-        } else {
-          prompt = `Based on the explanation between ${timeRange} in "${conceptName}", what is the primary mechanism or rule explained by the instructor, and why is it necessary?`;
-        }
+        title = 'Quick Question';
+        prompt = `In 1 or 2 simple sentences, what did the speaker just explain about "${conceptName}"?`;
         break;
       }
     }
