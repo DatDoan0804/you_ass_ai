@@ -178,6 +178,36 @@ export const SCHEMAS = {
       hint: {
         type: 'STRING',
         description: 'A subtle nudge pointing to the two facts in the segment that need to be connected, without spoiling the conclusion.'
+      },
+      transcriptVerification: {
+        type: 'STRING',
+        description: 'Exact quote or factual reference from the transcript proving this question is strictly within the video scope.'
+      },
+      inScopeValidation: {
+        type: 'BOOLEAN',
+        description: 'True if the question is answerable purely from the video transcript without requiring outside domain knowledge.'
+      },
+      gradingRubric: {
+        type: 'OBJECT',
+        description: 'Question-specific grading criteria generated alongside the question.',
+        properties: {
+          essentialPoints: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+            description: 'Core concepts, mechanisms, or causal relationships required for full credit.'
+          },
+          acceptableAlternatives: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+            description: 'Acceptable alternative phrasings, equivalent terminology, or valid analogies.'
+          },
+          commonMisconceptions: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+            description: 'Common misunderstandings or invalid assumptions to detect.'
+          }
+        },
+        required: ['essentialPoints', 'acceptableAlternatives', 'commonMisconceptions']
       }
     },
     required: [
@@ -192,7 +222,10 @@ export const SCHEMAS = {
       'correctOptionIndices',
       'expectedKeyPoints',
       'exemplarAnswer',
-      'hint'
+      'hint',
+      'transcriptVerification',
+      'inScopeValidation',
+      'gradingRubric'
     ]
   },
 
@@ -353,6 +386,13 @@ export const SCHEMAS = {
       'isCorrect',
       'qualitativeAssessment',
       'scoreNormalized',
+      'score',
+      'evaluation',
+      'confidence',
+      'correctPoints',
+      'missingPoints',
+      'misconceptions',
+      'suggestedAnswer',
       'verdictLabel',
       'whatWasCorrect',
       'missingOrIncorrect',
@@ -386,6 +426,40 @@ export const SCHEMAS = {
       }
     },
     required: ['conceptName', 'simpleAnalogy', 'stepByStepBreakdown', 'keyTakeaway']
+  },
+
+  TUTOR_FOLLOW_UP: {
+    type: 'OBJECT',
+    properties: {
+      directAnswer: {
+        type: 'STRING',
+        description: 'Empathetic, clear, 2-3 sentence answer directly addressing the learner’s question, grounded strictly in the video transcript and the concept.'
+      },
+      transcriptGrounding: {
+        type: 'STRING',
+        description: 'Direct quote or reference to the video segment supporting this explanation.'
+      },
+      keyInsight: {
+        type: 'STRING',
+        description: 'One-sentence memorable takeaway reinforcing the underlying principle.'
+      }
+    },
+    required: ['directAnswer', 'transcriptGrounding', 'keyInsight']
+  },
+
+  MILESTONE_TITLE_SYNTHESIS: {
+    type: 'OBJECT',
+    properties: {
+      milestoneTitle: {
+        type: 'STRING',
+        description: 'A concise, natural 2-5 word pedagogical milestone title encompassing the merged concepts (e.g. "Foundational Greetings & Responses", "State Mutation & Lifecycle").'
+      },
+      synthesisReasoning: {
+        type: 'STRING',
+        description: 'Brief reason why these concepts combine into this milestone.'
+      }
+    },
+    required: ['milestoneTitle']
   }
 };
 
@@ -450,7 +524,12 @@ Analyze the timestamped transcript chunk and decide:
 1. Whether this section contains substantive educational content worth a learning activity.
 2. The exact natural timestamp (in seconds, matching the end of a completed sentence/explanation cue) where the video should pause.
 3. Whether there is a "prediction" opportunity right before the instructor reveals a code output, experiment result, or solution.
-4. Which activity type best fits the material WITHOUT repeating recent activity types (${JSON.stringify(recentTypes.slice(-3))}).`;
+4. Which activity type best fits the material WITHOUT repeating recent activity types (${JSON.stringify(recentTypes.slice(-3))}).
+
+STRICT SCOPE CONSTRAINTS:
+- Ground all concepts EXCLUSIVELY in what is explicitly taught or demonstrated in the provided transcript cues.
+- Do NOT introduce unrelated knowledge from the general domain.
+- If a concept is only mentioned in passing without explanation, set shouldGenerateActivity to false.`;
 
     const formattedCues = (currentChunkCues || [])
       .map((c) => `[${c.start.toFixed(1)}s -> ${c.end.toFixed(1)}s] ${c.text}`)
@@ -500,20 +579,48 @@ CORE PEDAGOGICAL PRINCIPLE:
 A viewer who watched the segment passively MUST find this question difficult to answer or guess.
 A viewer who paid close attention, understood the underlying mechanism, and connected multiple facts from the segment should be rewarded.
 
-STRICT QUESTION QUALITY & DIFFICULTY REQUIREMENTS:
-1. TEST UNDERSTANDING & MULTI-FACT SYNTHESIS (NOT SURFACE RECOGNITION):
-   - NEVER ask trivial recall questions that merely repeat a single sentence from the video.
-   - Require the learner to connect at least TWO pieces of information from the transcript (e.g., how Premise/Mechanism A interacts with Condition/Constraint B, or how the current concept modifies an earlier concept in \`Previous Section Summary\`).
-2. REQUIRE REASONING & ATTENTION TO SUBTLE DETAIL:
-   - Frame questions around "Why would X happen if Y changed?", "What is the exact causal consequence of...", "Which subtle condition determines whether...", or a concrete mini-scenario/code trace.
-   - Target important nuances or boundary conditions mentioned in the transcript that an inattentive viewer would miss.
-3. PLAUSIBLE MISCONCEPTION DISTRACTORS (FOR MULTIPLE-CHOICE):
-   - When generating \`multiple_choice\` options, NEVER write obviously wrong or silly options.
-   - Every incorrect option MUST sound plausible to someone who only half-listened—representing a common misconception, an inverted cause-and-effect relationship, a confusion between two terms in the video, or a rule applied without its required boundary condition.
-   - Populate \`distractorRationale\` with 1-2 concise sentences explaining the misconception behind the wrong options.
-4. VARIETY & ZERO REPETITION:
-   - Do NOT repeat any question or phrasing from \`Recently Asked Activities\`.
-   - Ensure \`exemplarAnswer\` is a complete, multi-sentence model explanation synthesizing the connected facts.`;
+ADAPTIVE DIFFICULTY & LEARNER LEVEL CALIBRATION:
+- Target Difficulty: "${learnerContext?.targetDifficulty || 'medium'}"
+- Learner Level: "${learnerContext?.learnerLevel || 'intermediate'}"
+- Calibration Directives:
+  * If difficulty is "easy" or learnerLevel is "beginner":
+    - Provide clear pedagogical scaffolding and framing in the prompt.
+    - Focus directly on the primary cause-and-effect or core mechanism from the segment.
+    - Multiple-choice distractors must represent common single-step misunderstandings without overly convoluted edge cases.
+    - The hint should offer a concrete, supportive clue.
+  * If difficulty is "medium" or learnerLevel is "intermediate":
+    - Require synthesizing two distinct mechanisms or connecting a premise with its consequence.
+    - Distractors should represent plausible domain misconceptions (e.g. inverted sequence, omitting a condition).
+  * If difficulty is "hard" or learnerLevel is "advanced":
+    - Test edge cases, boundary conditions, subtle trade-offs, or counter-intuitive implications explained in the segment.
+    - Distractors should be highly sophisticated, plausible misunderstandings that trap passive viewers who do not understand the exact nuances.
+
+STRICT VIDEO SCOPE CONSTRAINTS:
+1. PURE TRANSCRIPT GROUNDING:
+   - The question, choices, and expected answer MUST be grounded entirely in what is explicitly taught, explained, or demonstrated in the provided transcript segment.
+   - Do NOT introduce concepts, methods, or terms outside the video's scope, even if related to the general subject.
+   - If a concept is mentioned in passing without explanation, do NOT test it.
+   - Populate \`transcriptVerification\` with the exact sentence or factual statement from the transcript that directly answers the question.
+   - Set \`inScopeValidation: true\` to certify the question requires zero outside knowledge.
+
+MULTIPLE-CHOICE QUALITY & DISTRACTOR BALANCE:
+1. BALANCED OPTIONS:
+   - Provide exactly 4 options. All options must have approximately the same difficulty, length (within 15-20%), and grammatical structure.
+   - The correct option must NOT consistently be the longest or most detailed choice.
+2. PLAUSIBLE MISCONCEPTIONS (NO ODD-ONE-OUT):
+   - All options must belong to the exact same conceptual category.
+   - Every incorrect option must represent a realistic, plausible domain misconception (e.g., reversed cause and effect, missing boundary condition, or term confusion from the segment).
+   - NEVER write obviously unrelated, absurd, or silly options.
+   - Populate \`distractorRationale\` explaining the misconception behind the distractors.
+
+QUESTION SPECIFIC GRADING RUBRIC:
+- Populate \`gradingRubric\` with \`essentialPoints\` (2-4 core mechanisms required for full credit), \`acceptableAlternatives\` (valid alternative phrasings), and \`commonMisconceptions\` (flaws indicating lack of understanding).
+
+NATURAL, FEASTABLE QUESTION FORMULATION:
+- The question prompt MUST be clear, natural, and directly understandable to a human learner.
+- NEVER use repetitive robotic prefixes (such as repeatedly prepending "Synthesizing the concepts of...").
+- NEVER link a concept, chapter title, or quote to itself (no tautological statements like "links X to X").
+- Keep sentences concise, grammatically sound, and focused on what was actually explained.`;
 
     const userPrompt = `Video Title: "${videoTitle}"
 Subject Category: ${sectionAnalysis.subjectCategory}
@@ -521,6 +628,10 @@ Core Concept: ${sectionAnalysis.conceptName}
 Concept Summary: ${sectionAnalysis.conceptSummary}
 Requested Activity Type: ${sectionAnalysis.recommendedActivityType}
 Target Difficulty: ${learnerContext?.targetDifficulty || 'medium'}
+Learner Level: ${learnerContext?.learnerLevel || 'intermediate'}
+${learnerContext?.strugglingConcepts?.length ? `Learner Known Struggles / Past Misunderstandings (address or reinforce if relevant):
+${JSON.stringify(learnerContext.strugglingConcepts.map((c) => ({ concept: c.name, struggle: c.lastMisunderstanding || 'needs practice' })))}` : ''}
+${learnerContext?.strongConcepts?.length ? `Learner Mastered Concepts: ${learnerContext.strongConcepts.map((c) => c.name).join(', ')}` : ''}
 
 Previous Section Summary (Connect to this when relevant):
 ${previousChunkSummary || 'N/A'}
@@ -553,17 +664,35 @@ Generate the high-difficulty, transcript-grounded activity JSON.`;
     const systemPrompt = `You are a supportive, rigorous AI tutor evaluating a learner's response to an active-learning exercise on YouTube.
 
 CRITICAL GRADING RULES:
-1. Distinguish between OBJECTIVE questions ("multiple_choice", "true_false", "multiple_select") and OPEN-ENDED writing/explanations:
+1. SEMANTIC EVALUATION (MEANING OVER WORDING):
+   - Evaluate what the user actually understands, not whether their wording matches predefined text.
+   - Do NOT penalize for: alternative but equivalent phrasing, different sentence structure, concise vs lengthy explanations, minor grammar/spelling errors, or equivalent terminology.
+   - Do NOT accept an answer merely because it contains relevant keywords if the actual meaning is flawed or superficial.
+   - Ground grading strictly in what was taught in the video; do not penalize for omitting outside knowledge.
+
+2. NUMERICAL SCORING (0 to 100) & PARTIAL CREDIT:
+   - Provide an integer score from 0 to 100:
+     * 90–100: Full credit — demonstrates clear, complete conceptual understanding.
+     * 65–89: High partial credit — core mechanism understood with minor omissions or slight imprecision.
+     * 40–64: Moderate partial credit — partial understanding shown, but misses key elements or causal links.
+     * 10–39: Low credit — significant omissions or fundamental misconceptions.
+     * 0–9: Zero credit — completely irrelevant, contradictory, or empty response.
+   - Set \`evaluation\` to "correct" (score >= 65), "partially_correct" (score 40-64), or "incorrect" (score < 40).
+   - In \`correctPoints\`: list specific concepts the user accurately identified.
+   - In \`missingPoints\`: list specific missing concepts, conditions, or consequences.
+   - In \`misconceptions\`: list any flawed reasoning or misconceptions present.
+   - In \`suggestedAnswer\`: provide a concise, high-quality complete answer grounded in the video.
+
+3. Distinguish between OBJECTIVE questions ("multiple_choice", "true_false", "multiple_select") and OPEN-ENDED writing/explanations:
    - For OBJECTIVE ABCD questions (\`evaluationMode: "objective"\`):
      * Populate \`conciseMcExplanation\` with:
-       - \`whyCorrect\`: Briefly explain (1-2 sentences) why the correct answer is right by focusing on the underlying concept rather than repeating the option text verbatim.
-       - \`whyOthersIncorrect\`: Briefly explain (1-2 sentences total) why the other answers are incorrect (the misconception they represent) WITHOUT writing a separate lengthy paragraph for every single option.
+       - \`whyCorrect\`: Briefly explain (1-2 sentences) why the correct answer is right focusing on the underlying concept.
+       - \`whyOthersIncorrect\`: Briefly explain (1-2 sentences total) why the other options are wrong (the misconception they represent).
        - \`coreConceptTakeaway\`: 1 concise sentence summarizing the principle.
    - For OPEN-ENDED questions (\`evaluationMode: "open_ended"\`):
-     * Do NOT grade as binary Correct/Incorrect! Accept semantically equivalent explanations written in the user's own words. Set \`qualitativeAssessment\` and \`verdictLabel\` to one of:
-       "Excellent understanding" | "Good understanding" | "Partially demonstrated understanding" | "Needs improvement".
-     * Evaluate all 4 criteria individually in \`criteriaBreakdown\` (Accuracy, Completeness, Reasoning, Clarity) and populate \`overallFeedback\`.
-     * Populate \`improvedAnswerExample\` with a COMPLETE, natural, multi-sentence rewritten answer and \`improvedAnswerExplanation\`.`;
+     * Set \`qualitativeAssessment\` to one of: "Excellent understanding" | "Good understanding" | "Partially demonstrated understanding" | "Needs improvement".
+     * Evaluate all 4 criteria in \`criteriaBreakdown\` (Accuracy, Completeness, Reasoning, Clarity) and populate \`overallFeedback\`.
+     * Populate \`improvedAnswerExample\` with a complete rewritten model answer and \`improvedAnswerExplanation\`.`;
 
     const userPrompt = `Video Title: "${videoTitle}"
 Activity Type: ${activity.type} (Evaluation Mode: ${isObjective ? 'objective' : 'open_ended'})
@@ -571,6 +700,7 @@ Concept Tested: ${activity.conceptName}
 Activity Prompt: "${activity.prompt}"
 ${activity.codeOrScenarioSnippet ? `Code / Scenario Snippet:\n${activity.codeOrScenarioSnippet}\n` : ''}
 ${activity.options?.length ? `Options:\n${activity.options.map((o, i) => `${String.fromCharCode(65 + i)}. ${o}`).join('\n')}\nCorrect Indices: ${JSON.stringify(activity.correctOptionIndices)}\n` : ''}
+Grading Rubric: ${JSON.stringify(activity.gradingRubric || { essentialPoints: activity.expectedKeyPoints || [], acceptableAlternatives: [], commonMisconceptions: [] })}
 Expected Key Points: ${JSON.stringify(activity.expectedKeyPoints || [])}
 Reference Model Answer: "${activity.exemplarAnswer || ''}"
 
@@ -584,7 +714,7 @@ Learner's Submitted Response:
 ${typeof userAnswer === 'string' ? userAnswer : JSON.stringify(userAnswer)}
 """
 
-Evaluate the learner's response and return the complete structured JSON.`;
+Evaluate the learner's response semantically and return the structured JSON.`;
 
     return { systemPrompt, userPrompt, schema: SCHEMAS.ANSWER_EVALUATION };
   }
@@ -610,5 +740,68 @@ ${transcriptText}
 Return the structured explanation JSON.`;
 
     return { systemPrompt, userPrompt, schema: SCHEMAS.CONCEPT_EXPLANATION };
+  }
+
+  static buildTutorFollowUpPrompt({
+    videoTitle,
+    activity,
+    userAnswer,
+    evaluation,
+    userQuestion,
+    transcriptText
+  }) {
+    const systemPrompt = `You are a supportive, insightful personal AI tutor having a one-on-one dialogue with a learner watching a YouTube video.
+The learner just completed a learning activity, received grading feedback, and has asked a follow-up question.
+
+RULES:
+1. Ground your answer STRICTLY in what is taught in the video transcript and the core concept tested.
+2. Directly and empathetically address the learner's question in 2-3 concise sentences.
+3. If they ask why an answer choice was wrong or why their answer lost points, reference the transcript and explain the conceptual distinction clearly.
+4. If they ask for clarification or real-world application, provide a succinct intuitive explanation grounded in the video's explanation.
+5. Provide a direct quote or timestamp reference in \`transcriptGrounding\` supporting your answer.
+6. Provide a 1-sentence \`keyInsight\` summarizing the core takeaway.`;
+
+    const userPrompt = `Video Title: "${videoTitle}"
+Concept Tested: "${activity?.conceptName || 'Core Concept'}"
+Activity Question: "${activity?.prompt || ''}"
+${activity?.options?.length ? `Multiple-Choice Options:\n${activity.options.map((o, i) => `${String.fromCharCode(65 + i)}. ${o}`).join('\n')}\n` : ''}
+Learner's Submitted Answer: "${typeof userAnswer === 'string' ? userAnswer : JSON.stringify(userAnswer)}"
+Grading Evaluation / Score: Score ${evaluation?.score ?? 'N/A'}/100 (${evaluation?.evaluation || evaluation?.verdictLabel || 'Evaluated'})
+Tutor Feedback Given: "${evaluation?.feedback || evaluation?.suggestedAnswer || ''}"
+
+Relevant Transcript Section:
+"""
+${transcriptText || activity?.transcriptExcerpt || activity?.contextSummary || ''}
+"""
+
+Learner's Follow-Up Question:
+"${userQuestion}"
+
+Provide your structured tutor follow-up response JSON.`;
+
+    return { systemPrompt, userPrompt, schema: SCHEMAS.TUTOR_FOLLOW_UP };
+  }
+
+  static buildSynthesizeMilestonePrompt({
+    videoTitle,
+    conceptNames = [],
+    mergedSummary = ''
+  }) {
+    const systemPrompt = `You are an expert curriculum designer. Multiple learning checkpoints or chapter topics in a YouTube video occurred close together (within 5 minutes) and have been merged into a single milestone.
+Synthesize a concise, natural, 2-5 word pedagogical milestone title that captures the collective theme of these concepts (e.g. "Essential Greetings & Introductions", "Variable Lifecycle & Scope", "Reactive State Management").
+Do NOT use clumsy punctuation or concatenate titles with '&'. Formulate a clean, natural curriculum milestone title.`;
+
+    const userPrompt = `Video Title: "${videoTitle}"
+Merged Concepts:
+${conceptNames.map((n) => `- ${n}`).join('\n')}
+
+Merged Summary Context:
+"""
+${mergedSummary}
+"""
+
+Output the structured JSON with milestoneTitle and synthesisReasoning.`;
+
+    return { systemPrompt, userPrompt, schema: SCHEMAS.MILESTONE_TITLE_SYNTHESIS };
   }
 }

@@ -100,11 +100,17 @@ export class BreakpointDetector {
           null;
 
         const bpId = matchingChunk ? matchingChunk.id : `chapter_${i}`;
-        const conceptTitle = ch.title || matchingChunk?.chapterTitle || `Chapter ${i + 1}`;
+        const conceptTitle = ActivityGenerator.cleanConceptName(
+          ch.title || matchingChunk?.chapterTitle || `Chapter ${i + 1}`
+        ) || `Chapter ${i + 1}`;
+        const hasSubstantiveChunkText =
+          matchingChunk?.text &&
+          matchingChunk.text.length > 35 &&
+          !/^(chapter|section|part)\s+\d+[:\s-]*$/i.test(matchingChunk.text.trim());
         const sectionText =
-          matchingChunk?.text && matchingChunk.text.length > 35
+          hasSubstantiveChunkText
             ? matchingChunk.text
-            : `In "${conceptTitle}" (${ch.start}s–${ch.end}s), the instructor introduces the core definitions, explains how the mechanism operates step by step, and demonstrates its practical application.`;
+            : `In "${conceptTitle}" (${ch.start}s–${ch.end}s), the instructor introduces the core principles, explains how they operate step by step, and demonstrates their practical application.`;
 
         const rotatedType = SEED_ACTIVITY_ROTATION[seedIndex % SEED_ACTIVITY_ROTATION.length];
         seedIndex += 1;
@@ -191,6 +197,213 @@ export class BreakpointDetector {
     }
 
     this.deduplicateAndSortBreakpoints();
+    this.enforceMinimumInterval();
+  }
+
+  /**
+   * Enforces the 5-minute (300-second) minimum interval between consecutive breakpoints.
+   * Rather than merely dropping close candidates, it:
+   * 1. Evaluates candidate importance (strength, source, concept depth).
+   * 2. Groups close candidates into clusters.
+   * 3. Selects the most meaningful learning moment as the anchor (preserving its exact timestamp).
+   * 4. Merges closely related concepts, key points, and summaries from neighboring candidates into the anchor.
+   * 5. Removes low-value / redundant interruptions.
+   * 6. Strictly guarantees that every consecutive pair of scheduled breakpoints is separated by at least minIntervalSeconds (>= 300s).
+   */
+  enforceMinimumInterval() {
+    const minInterval = Math.max(60, Number(this.settings.minIntervalSeconds) || 300);
+    const duration = Number(this.videoDuration) || 0;
+
+    const all = Array.from(this.scheduledBreakpoints.values())
+      .filter((bp) => Number.isFinite(bp.timestamp) && bp.timestamp > 0 && !bp.skippedByAi && bp.activity)
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    if (all.length <= 1) return;
+
+    // Filter out trivial breakpoints at the very start (< 120s if video >= 360s) or very end (< 40s from end)
+    const filtered = all.filter((bp) => {
+      if (duration >= 360) {
+        if (bp.timestamp < 120 && all.some((c) => c.timestamp >= 180)) {
+          return false;
+        }
+        if (bp.timestamp >= duration - 40) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const candidates = filtered.length > 0 ? filtered : all;
+    if (candidates.length <= 1) {
+      this.scheduledBreakpoints.clear();
+      if (candidates.length === 1) {
+        this.scheduledBreakpoints.set(candidates[0].id, candidates[0]);
+      }
+      return;
+    }
+
+    const getImportance = (bp, windowEnd = 0) => {
+      let score = STRENGTH_RANK[bp.strength] || 2;
+      if (bp.source === 'chapter') score += 2;
+      if (bp.source === 'ai-prediction' || bp.source === 'ai-semantic') score += 1.5;
+      if (bp.aiRefined) score += 1;
+      const textLen = (bp.activity?.transcriptExcerpt || bp.activity?.conceptSummary || '').length;
+      if (textLen > 150) score += 1;
+      
+      // Bonus for major milestones / tips / summary / overview chapters
+      const name = (bp.activity?.conceptName || bp.reason || '').toLowerCase();
+      if (/\b(tip|summary|review|overview|conclusion|checkpoint|part|section)\b/.test(name)) {
+        score += 1.5;
+      }
+
+      // Slightly favor candidates that culminate a learning segment (closer to windowEnd)
+      if (windowEnd > 0 && bp.timestamp >= windowEnd * 0.6) {
+        score += 0.8;
+      }
+      return score;
+    };
+
+    const mergeBreakpoints = (targetBp, sourceBp) => {
+      if (!targetBp.activity || !sourceBp.activity) return;
+      const tAct = targetBp.activity;
+      const sAct = sourceBp.activity;
+
+      // Merge concept names cleanly without creating an endless string
+      const tConcept = (tAct.conceptName || '').trim();
+      const sConcept = (sAct.conceptName || '').trim();
+      targetBp.mergedConceptNames = targetBp.mergedConceptNames || (tConcept ? [tConcept] : []);
+      if (sConcept && !targetBp.mergedConceptNames.includes(sConcept)) {
+        targetBp.mergedConceptNames.push(sConcept);
+      }
+      if (sConcept && tConcept && !tConcept.toLowerCase().includes(sConcept.toLowerCase())) {
+        const parts = tConcept.split(/ & | \+ /).map((p) => p.trim());
+        if (parts.length < 2) {
+          tAct.conceptName = `${tConcept} & ${sConcept}`;
+        } else if (!tConcept.includes('related')) {
+          tAct.conceptName = `${parts[0]} & ${parts[1]} (and related concepts)`;
+        }
+      }
+
+      // Merge expected key points
+      const existingPoints = new Set((tAct.expectedKeyPoints || []).map((p) => p.toLowerCase().trim()));
+      const mergedPoints = [...(tAct.expectedKeyPoints || [])];
+      for (const p of sAct.expectedKeyPoints || []) {
+        const norm = (p || '').toLowerCase().trim();
+        if (norm && !existingPoints.has(norm)) {
+          existingPoints.add(norm);
+          mergedPoints.push(p);
+        }
+      }
+      tAct.expectedKeyPoints = mergedPoints.slice(0, 6);
+
+      // Merge summaries
+      if (sAct.conceptSummary && tAct.conceptSummary && !tAct.conceptSummary.includes(sAct.conceptSummary)) {
+        tAct.conceptSummary = `${tAct.conceptSummary} ${sAct.conceptSummary}`;
+      }
+
+      // Keep question prompt clean, readable, and feastable (never prepend recursive synthesis prefixes)
+      tAct.prompt = BreakpointDetector.sanitizePrompt(tAct.prompt);
+
+      // Inherit stronger rating
+      if ((STRENGTH_RANK[sourceBp.strength] || 2) > (STRENGTH_RANK[targetBp.strength] || 2)) {
+        targetBp.strength = sourceBp.strength;
+      }
+    };
+
+    // Forward clustering: ensure consecutive selected breakpoints have gap >= minInterval
+    const selected = [];
+    let i = 0;
+
+    while (i < candidates.length) {
+      const current = candidates[i];
+
+      if (selected.length === 0) {
+        const targetWindowEnd = current.timestamp + minInterval;
+        let best = current;
+        let bestScore = getImportance(current, targetWindowEnd);
+        const cluster = [current];
+        let j = i + 1;
+
+        while (j < candidates.length && candidates[j].timestamp - current.timestamp < minInterval) {
+          cluster.push(candidates[j]);
+          const score = getImportance(candidates[j], targetWindowEnd);
+          if (score >= bestScore) {
+            bestScore = score;
+            best = candidates[j];
+          }
+          j++;
+        }
+
+        for (const item of cluster) {
+          if (item !== best) {
+            mergeBreakpoints(best, item);
+          }
+        }
+
+        selected.push(best);
+        i = j;
+      } else {
+        const lastSelected = selected[selected.length - 1];
+        const gap = current.timestamp - lastSelected.timestamp;
+
+        if (gap < minInterval) {
+          mergeBreakpoints(lastSelected, current);
+          i++;
+        } else {
+          const targetWindowEnd = current.timestamp + minInterval;
+          let best = current;
+          let bestScore = getImportance(current, targetWindowEnd);
+          const cluster = [current];
+          let j = i + 1;
+
+          while (j < candidates.length && candidates[j].timestamp - current.timestamp < minInterval) {
+            if (candidates[j].timestamp - lastSelected.timestamp >= minInterval) {
+              cluster.push(candidates[j]);
+              const score = getImportance(candidates[j], targetWindowEnd);
+              if (score >= bestScore) {
+                bestScore = score;
+                best = candidates[j];
+              }
+            }
+            j++;
+          }
+
+          for (const item of cluster) {
+            if (item !== best) {
+              mergeBreakpoints(best, item);
+            }
+          }
+
+          selected.push(best);
+          i = j;
+        }
+      }
+    }
+
+    // Final verification: guarantee every consecutive pair has gap >= minInterval
+    const finalKept = [];
+    for (const bp of selected) {
+      if (finalKept.length === 0) {
+        finalKept.push(bp);
+      } else {
+        const last = finalKept[finalKept.length - 1];
+        if (bp.timestamp - last.timestamp >= minInterval) {
+          finalKept.push(bp);
+        } else {
+          mergeBreakpoints(last, bp);
+        }
+      }
+    }
+
+    this.scheduledBreakpoints.clear();
+    for (const bp of finalKept) {
+      this.scheduledBreakpoints.set(bp.id, bp);
+    }
+
+    const removed = all.length - finalKept.length;
+    if (removed > 0) {
+      this.log(`[Breakpoint] Enforced ${minInterval}s minimum interval: kept ${finalKept.length} of ${all.length} candidates (merged/pruned ${removed}).`);
+    }
   }
 
   hasBreakpointNear(timestamp, toleranceSeconds = 4.0, ignoreId = null) {
@@ -377,6 +590,7 @@ export class BreakpointDetector {
 
     this.log(`[Breakpoint] Semantic analysis completed`);
     this.deduplicateAndSortBreakpoints();
+    this.enforceMinimumInterval();
     for (const bp of this.getAllScheduledBreakpoints()) {
       if (bp.source === 'ai-semantic') {
         this.log(`[Breakpoint] Scheduled breakpoint: ${bp.timestamp.toFixed(1)}s (${bp.reason})`);
@@ -417,7 +631,7 @@ export class BreakpointDetector {
     if (!chunks || chunks.length === 0) return [];
 
     const effectiveMinInterval =
-      (this.settings.minIntervalSeconds ?? 15) * adaptiveMultiplier;
+      (this.settings.minIntervalSeconds ?? 300) * adaptiveMultiplier;
 
     const candidates = [];
 
@@ -435,9 +649,7 @@ export class BreakpointDetector {
       const timeSinceLast = chunk.end - this.lastActivityTimestamp;
       if (
         this.lastActivityTimestamp > 0 &&
-        timeSinceLast < effectiveMinInterval &&
-        !chunk.isChapterBoundary &&
-        existing?.source !== 'chapter'
+        timeSinceLast < effectiveMinInterval
       ) {
         continue;
       }
@@ -497,6 +709,7 @@ export class BreakpointDetector {
     });
 
     this.deduplicateAndSortBreakpoints();
+    this.enforceMinimumInterval();
     this.log(`[Breakpoint] Semantic analysis completed`);
     this.log(`[Breakpoint] Scheduled breakpoint: ${finalTimestamp.toFixed(1)}s`);
   }
@@ -508,14 +721,14 @@ export class BreakpointDetector {
       }
     }
     if (newTime < this.lastActivityTimestamp) {
-      this.lastActivityTimestamp = Math.max(0, newTime - (this.settings.minIntervalSeconds || 15));
+      this.lastActivityTimestamp = Math.max(0, newTime - (this.settings.minIntervalSeconds || 300));
     }
   }
 
   checkPlaybackForBreakpoint(currentTime, adaptiveMultiplier = 1.0, playbackRate = 1.0) {
     const effectiveMinInterval =
-      (this.settings.minIntervalSeconds ?? 15) * adaptiveMultiplier;
-    const maxInterval = this.settings.maxIntervalSeconds || 360;
+      (this.settings.minIntervalSeconds ?? 300) * adaptiveMultiplier;
+    const maxInterval = this.settings.maxIntervalSeconds || 600;
 
     const upperTolerance = Math.max(1.8, 1.2 * Math.max(1, playbackRate));
 
@@ -540,9 +753,7 @@ export class BreakpointDetector {
 
       if (
         this.lastActivityTimestamp > 0 &&
-        currentTime - this.lastActivityTimestamp < effectiveMinInterval &&
-        bp.source !== 'chapter' &&
-        bp.strength !== 'strong'
+        currentTime - this.lastActivityTimestamp < effectiveMinInterval
       ) {
         continue;
       }
@@ -621,6 +832,7 @@ export class BreakpointDetector {
     return {
       ...activity,
       id: `act_${videoId}_${bpId}`,
+      prompt: BreakpointDetector.sanitizePrompt(activity.prompt),
       title:
         source === 'chapter'
           ? `Chapter Checkpoint (${activity.title})`
@@ -629,5 +841,13 @@ export class BreakpointDetector {
           : activity.title,
       isAiGenerated: source === 'ai-semantic'
     };
+  }
+
+  static sanitizePrompt(prompt = '') {
+    return ActivityGenerator.sanitizePrompt(prompt);
+  }
+
+  static cleanConceptName(name = '') {
+    return ActivityGenerator.cleanConceptName(name);
   }
 }

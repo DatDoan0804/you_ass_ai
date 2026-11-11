@@ -63,14 +63,14 @@
   overflow: visible !important;
 }
 
-/* Invisible 36px-wide hit target cushion around each marker so clicking is effortless */
+/* Tight hit target cushion around each marker so it does not trigger across normal progress bar areas */
 .yt-learn-timeline-marker::before {
   content: '';
   position: absolute;
-  top: -10px;
-  bottom: -10px;
-  left: -14px;
-  right: -14px;
+  top: -6px;
+  bottom: -6px;
+  left: -3px;
+  right: -3px;
   background: transparent;
 }
 
@@ -101,10 +101,10 @@
 }
 
 .yt-learn-timeline-marker:hover,
-.yt-learn-timeline-marker.proximity-active {
-  transform: translate(-50%, -50%) scale(1.42);
+.yt-learn-timeline-marker.hover-active {
+  transform: translate(-50%, -50%) scale(1.38);
   z-index: 2147483647;
-  box-shadow: 0 0 12px #38bdf8;
+  box-shadow: 0 0 10px #38bdf8;
 }
 
 /* Marker Popup Card: Positioned ABOVE YouTube's .ytp-tooltip thumbnail preview (default 152px above bar) */
@@ -148,9 +148,9 @@
   transform: translateX(0);
 }
 
-/* Show popup on direct hover OR when X-axis proximity detector activates the marker */
+/* Show popup on direct hover */
 .yt-learn-timeline-marker:hover .yt-learn-marker-tooltip,
-.yt-learn-timeline-marker.proximity-active .yt-learn-marker-tooltip {
+.yt-learn-timeline-marker.hover-active .yt-learn-marker-tooltip {
   opacity: 1;
   visibility: visible;
 }
@@ -215,6 +215,25 @@
   margin: 0;
   z-index: 2147483645;
   max-width: min(560px, 92vw);
+}
+
+.yt-learn-dedicated-bar.is-collapsed {
+  padding: 4px 6px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  margin: 4px 0;
+}
+
+.yt-learn-bar-collapsed-inner {
+  display: flex;
+  align-items: center;
+}
+
+.yt-learn-collapsed-btn {
+  padding: 4px 10px;
+  font-size: 11.5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .yt-learn-bar-left,
@@ -334,33 +353,126 @@
 }
 
 /* ==========================================================================
-   Main Learning Activity Overlay Card
+   Main Learning Activity Overlay Card (Compact Side Companion Layout)
    ========================================================================== */
 .yt-learn-overlay-backdrop {
   position: fixed;
-  top: 72px;
-  right: 24px;
-  bottom: 96px;
-  width: min(500px, 92vw);
+  top: 60px;
+  right: 18px;
+  bottom: 84px;
+  width: min(385px, 32vw);
   z-index: 2147483646;
   display: flex;
   flex-direction: column;
-  pointer-events: auto;
+  pointer-events: none;
   font-family: var(--yt-learn-font);
-  animation: ytLearnSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: ytLearnSlideIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .yt-learn-card {
+  pointer-events: auto;
   background: var(--yt-learn-bg);
   backdrop-filter: blur(16px);
   border: 1px solid var(--yt-learn-border);
-  border-radius: 16px;
+  border-radius: 14px;
   color: var(--yt-learn-text);
   display: flex;
   flex-direction: column;
   max-height: 100%;
-  box-shadow: 0 22px 45px -10px rgba(0, 0, 0, 0.68);
+  box-shadow: 0 18px 40px -10px rgba(0, 0, 0, 0.72);
   overflow: hidden;
+}
+
+.yt-learn-minimized-pill {
+  position: fixed;
+  bottom: 88px;
+  right: 20px;
+  z-index: 2147483646;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid var(--yt-learn-accent);
+  border-radius: 999px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  color: var(--yt-learn-text);
+  font-family: var(--yt-learn-font);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  animation: ytLearnSlideUp 0.2s ease-out;
+}
+
+.yt-learn-minimized-pill:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(56, 189, 248, 0.3);
+}
+
+.yt-learn-pill-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.yt-learn-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--yt-learn-accent);
+  box-shadow: 0 0 8px var(--yt-learn-accent);
+}
+
+.yt-learn-pill-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.2);
+  color: var(--yt-learn-accent);
+}
+
+.yt-learn-pill-title {
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yt-learn-pill-expand-btn {
+  background: var(--yt-learn-surface);
+  border: 1px solid var(--yt-learn-border);
+  color: var(--yt-learn-text);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.yt-learn-btn-icon {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--yt-learn-muted);
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  transition: all 0.14s ease;
+}
+
+.yt-learn-btn-icon:hover {
+  color: var(--yt-learn-text);
+  background: var(--yt-learn-surface);
+  border-color: var(--yt-learn-border);
 }
 
 .yt-learn-card-header {
@@ -586,6 +698,21 @@
   line-height: 1.5;
 }
 
+.yt-learn-eval-points-box {
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.yt-learn-points-correct {
+  background: rgba(16, 185, 129, 0.1);
+  border-left: 3px solid #10b981;
+}
+
+.yt-learn-points-missing {
+  background: rgba(245, 158, 11, 0.1);
+  border-left: 3px solid #f59e0b;
+}
+
 .yt-learn-criteria-list {
   display: flex;
   flex-direction: column;
@@ -753,4 +880,285 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ==========================================================================
+   Interactive AI Tutor Follow-up Dialog
+   ========================================================================== */
+.yt-learn-tutor-followup {
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.yt-learn-tutor-followup-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.yt-learn-tutor-followup-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #38bdf8;
+}
+
+.yt-learn-tutor-followup-subtitle {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.yt-learn-tutor-chat-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.yt-learn-chat-bubble {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.yt-learn-chat-user {
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #f1f5f9;
+  align-self: flex-end;
+  max-width: 90%;
+}
+
+.yt-learn-chat-tutor {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #e2e8f0;
+  align-self: flex-start;
+  max-width: 96%;
+}
+
+.yt-learn-chat-author {
+  font-weight: 700;
+  color: #38bdf8;
+  margin-right: 4px;
+}
+
+.yt-learn-tutor-reply-header {
+  margin-bottom: 4px;
+}
+
+.yt-learn-tutor-reply-body {
+  color: #e2e8f0;
+  margin-bottom: 6px;
+}
+
+.yt-learn-tutor-reply-quote {
+  font-size: 11px;
+  color: #cbd5e1;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 4px 8px;
+  border-left: 2px solid #38bdf8;
+  border-radius: 0 4px 4px 0;
+  margin-bottom: 6px;
+}
+
+.yt-learn-tutor-reply-insight {
+  font-size: 11.5px;
+  color: #a7f3d0;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.yt-learn-tutor-input-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.yt-learn-tutor-input {
+  flex: 1;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.yt-learn-tutor-input:focus {
+  outline: none;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3);
+}
+
+/* ==========================================================================
+   Companion Subtitles on YouTube Video Player (On-Demand from App alongside Native YouTube Subtitles)
+   ========================================================================== */
+.yt-learn-dual-subtitles-container,
+.yt-learn-secondary-subtitle-container {
+  position: absolute;
+  left: 50%;
+  bottom: 104px;
+  transform: translateX(-50%);
+  z-index: 2147483630;
+  pointer-events: none;
+  width: max-content;
+  max-width: 88%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: bottom 0.2s ease, opacity 0.15s ease;
+}
+
+#movie_player.ytp-autohide .yt-learn-dual-subtitles-container,
+#movie_player.ytp-autohide .yt-learn-secondary-subtitle-container {
+  bottom: 64px;
+}
+
+#movie_player.ytp-fullscreen .yt-learn-dual-subtitles-container,
+#movie_player.ytp-fullscreen .yt-learn-secondary-subtitle-container {
+  bottom: 124px;
+  max-width: 82%;
+}
+
+#movie_player.ytp-fullscreen.ytp-autohide .yt-learn-dual-subtitles-container,
+#movie_player.ytp-fullscreen.ytp-autohide .yt-learn-secondary-subtitle-container {
+  bottom: 84px;
+}
+
+#yt-learn-assistant-root {
+  position: static;
+  pointer-events: none;
+}
+
+.yt-learn-dual-subtitles-box,
+.yt-learn-secondary-subtitle-box {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 14px;
+  background: rgba(10, 15, 29, 0.82);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-radius: 8px;
+  border: 1px solid rgba(253, 224, 71, 0.3);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.yt-learn-sub-line {
+  line-height: 1.35;
+  font-weight: 600;
+  text-rendering: optimizeLegibility;
+  word-break: break-word;
+}
+
+/* Primary Subtitle Line: Kept display: none in companion mode so YouTube's native captions show as the main subtitle */
+.yt-learn-sub-primary {
+  display: none !important;
+}
+
+/* Secondary / Companion Subtitle Line: Warm golden yellow for clear visual distinction */
+.yt-learn-sub-secondary,
+.yt-learn-secondary-subtitle-text {
+  color: #fde047;
+  font-size: 16px;
+  font-weight: 600;
+  opacity: 0.98;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.85);
+}
+
+/* Font Size Presets */
+.yt-learn-dual-subtitles-container.font-size-small .yt-learn-sub-secondary,
+.yt-learn-secondary-subtitle-container.font-size-small .yt-learn-secondary-subtitle-text {
+  font-size: 13px;
+}
+
+.yt-learn-dual-subtitles-container.font-size-medium .yt-learn-sub-secondary,
+.yt-learn-secondary-subtitle-container.font-size-medium .yt-learn-secondary-subtitle-text {
+  font-size: 16px;
+}
+
+.yt-learn-dual-subtitles-container.font-size-large .yt-learn-sub-secondary,
+.yt-learn-secondary-subtitle-container.font-size-large .yt-learn-secondary-subtitle-text {
+  font-size: 20px;
+}
+
+/* Fullscreen larger text */
+#movie_player.ytp-fullscreen .yt-learn-dual-subtitles-container.font-size-medium .yt-learn-sub-secondary,
+#movie_player.ytp-fullscreen .yt-learn-secondary-subtitle-container.font-size-medium .yt-learn-secondary-subtitle-text {
+  font-size: 20px;
+}
+
+#movie_player.ytp-fullscreen .yt-learn-dual-subtitles-container.font-size-large .yt-learn-sub-secondary,
+#movie_player.ytp-fullscreen .yt-learn-secondary-subtitle-container.font-size-large .yt-learn-secondary-subtitle-text {
+  font-size: 26px;
+}
+
+/* Active toggle button style for dedicated bar */
+.yt-learn-icon-btn.active-toggle {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #38bdf8;
+}
+
+.yt-learn-server-badge {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+/* Inline Quick Dual Subtitle Controls on Dedicated Bar */
+.yt-learn-dual-subs-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.yt-learn-sub-dropdown {
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(15, 23, 42, 0.88);
+  color: #f8fafc;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  max-width: 105px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+}
+
+.yt-learn-sub-dropdown:focus {
+  outline: none;
+  box-shadow: 0 0 0 1px #38bdf8;
+}
+
+.yt-learn-sub1-dropdown {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #ffffff;
+}
+
+.yt-learn-sub2-dropdown {
+  border: 1px solid rgba(253, 224, 71, 0.5);
+  color: #fde047;
+}
+
+.yt-learn-sub-dropdown option {
+  background: #0f172a;
+  color: #f8fafc;
 }

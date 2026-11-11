@@ -1,0 +1,14 @@
+# Runtime server logs and PID
+server/*.pid
+server/*.log
+
+# Subtitle cache files (keep directory via .gitkeep)
+subtitles_cache/*
+!subtitles_cache/.gitkeep
+
+# Node dependencies
+node_modules/
+
+# OS / Editor files
+.DS_Store
+Thumbs.db

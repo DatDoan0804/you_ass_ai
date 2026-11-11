@@ -23,8 +23,7 @@
  *      and displays live intervention status in the dedicated bar when watching a non-educational video.
  */
 
-export const PROXIMITY_ACTIVATE_PX = 26;
-export const PROXIMITY_HYSTERESIS_PX = 34;
+import { ActivityGenerator } from '../ai/activity-generator.js';
 
 export class UIManager {
   /**
@@ -45,16 +44,21 @@ export class UIManager {
     this.rootContainer = null;
     this.barContainer = null;
     this.markersLayer = null;
-    this.boundProgressBarHost = null;
-    this.activeProximityBpId = null;
+    this.barCollapsed = false;
+    this.isActivityMinimized = false;
 
     this.activePanel = null;
     this.activeActivityId = null;
+    this.activeActivity = null;
+    this.dualSubtitlesContainer = null;
+    this.availableTracks = [];
+    this.translationLanguages = [];
     this.isSubmitting = false;
     this.statusText = 'Ready';
     this.statusState = 'ready';
     this.videoClassification = null;
     this.userClassificationOverride = null;
+    this.localServerConnected = false;
 
     this.cachedBreakpoints = [];
     this.cachedTriggeredIds = new Set();
@@ -68,14 +72,13 @@ export class UIManager {
         this.cachedTriggeredIds
       );
     };
-
-    this.boundProgressBarMouseMove = this.handleProgressBarMouseMove.bind(this);
-    this.boundProgressBarMouseLeave = this.handleProgressBarMouseLeave.bind(this);
   }
 
   init(initialSettings) {
     this.settings = initialSettings || {};
     if (typeof document === 'undefined') return;
+
+    this.monitorNativeCaptionButton();
 
     const existingRoot = document.getElementById('yt-learn-assistant-root');
     if (existingRoot) {
@@ -105,6 +108,19 @@ export class UIManager {
   mountDedicatedBarInSafeSlot() {
     if (!this.barContainer || typeof document === 'undefined') return;
 
+    // Only display the dedicated bar on active video watch pages
+    const isWatchPage =
+      typeof window !== 'undefined' &&
+      ((window.location?.pathname || '').includes('/watch') ||
+        (window.location?.search || '').includes('v=') ||
+        Boolean(window.__YT_LEARN_SIMULATED_VIDEO_ID__));
+
+    if (!isWatchPage) {
+      this.barContainer.style.display = 'none';
+      return;
+    }
+    this.barContainer.style.display = '';
+
     const fsElement = document.fullscreenElement || document.webkitFullscreenElement;
     if (fsElement) {
       this.barContainer.classList.add('floating-top-dock');
@@ -115,8 +131,8 @@ export class UIManager {
     }
 
     const belowPlayerSlot =
-      document.querySelector('ytd-watch-metadata #above-the-fold') ||
       document.querySelector('#below') ||
+      document.querySelector('ytd-watch-metadata #above-the-fold') ||
       document.querySelector('#primary-inner #info') ||
       document.querySelector('[data-yt-learn-dedicated-slot]');
 
@@ -154,12 +170,40 @@ export class UIManager {
     this.renderDedicatedBar();
   }
 
+  setLocalServerStatus(isConnected) {
+    if (this.localServerConnected !== isConnected) {
+      this.localServerConnected = isConnected;
+      this.renderDedicatedBar();
+    }
+  }
+
   renderDedicatedBar() {
     if (!this.barContainer) return;
     this.mountDedicatedBarInSafeSlot();
 
-    const isEnabled = this.settings.enabled !== false;
+    const s = this.settings || {};
+    const isEnabled = s.enabled !== false;
     const cls = this.videoClassification;
+
+    if (this.barCollapsed) {
+      this.barContainer.classList.add('is-collapsed');
+      this.barContainer.innerHTML = `
+        <div class="yt-learn-bar-collapsed-inner">
+          <button class="yt-learn-fab yt-learn-collapsed-btn" id="yt-learn-expand-bar-btn" title="Expand AI Tutor Bar">
+            <span class="yt-learn-status-dot ${isEnabled ? this.statusState : 'disabled'}"></span>
+            <span>🎓 AI Tutor: <strong>${isEnabled ? this.escapeHtml(this.statusText) : 'Off'}</strong></span>
+            <span style="font-size:10px;margin-left:4px;opacity:0.8;">▲ Expand</span>
+          </button>
+        </div>
+      `;
+      this.barContainer.querySelector('#yt-learn-expand-bar-btn')?.addEventListener('click', () => {
+        this.barCollapsed = false;
+        this.renderDedicatedBar();
+      });
+      return;
+    }
+
+    this.barContainer.classList.remove('is-collapsed');
 
     let classificationBadgeHtml = '';
     if (cls) {
@@ -188,17 +232,71 @@ export class UIManager {
         ${classificationBadgeHtml}
       </div>
       <div class="yt-learn-bar-right">
+        <div class="yt-learn-dual-subs-group">
+          <button class="yt-learn-icon-btn ${s.enableDualSubtitles !== false ? 'active-toggle' : ''}" id="yt-learn-dual-subs-btn" title="Toggle 2nd Subtitle on/off (displayed alongside YouTube native subtitles)${this.localServerConnected ? ' [🖥️ Terminal Server Connected]' : ''}">💬 2nd Sub: <strong>${s.enableDualSubtitles !== false ? 'ON' : 'Off'}</strong>${this.localServerConnected ? ' <span class="yt-learn-server-badge" title="Local Subtitle Server connected in terminal">🖥️</span>' : ''}</button>
+          ${s.enableDualSubtitles !== false ? `
+            <select class="yt-learn-sub-dropdown yt-learn-sub2-dropdown" id="yt-learn-sub2-select" title="2nd Subtitle Language (Downloaded on demand from YouTube)">
+              ${this.buildSub2OptionsHtml(s.secondarySubtitleLang || 'en')}
+            </select>
+            <select class="yt-learn-sub-dropdown yt-learn-sub1-dropdown" id="yt-learn-sub1-select" style="display:none;" title="Main Subtitle Track">
+              ${this.buildSub1OptionsHtml(s.primarySubtitleLang || 'auto')}
+            </select>
+          ` : ''}
+        </div>
         <button class="yt-learn-icon-btn" id="yt-learn-now-btn" title="Generate activity for current section now">⚡ Quiz Now</button>
         <button class="yt-learn-icon-btn" id="yt-learn-dashboard-btn" title="Learning Profile & Activity History">📊 Progress</button>
         <button class="yt-learn-icon-btn" id="yt-learn-settings-btn" title="Assistant Settings & API Key">⚙️ Settings</button>
+        <button class="yt-learn-icon-btn yt-learn-collapse-bar-btn" id="yt-learn-collapse-bar-btn" title="Collapse Bar to Mini Pill">▾</button>
       </div>
     `;
 
+    this.barContainer.querySelector('#yt-learn-dual-subs-btn')?.addEventListener('click', async () => {
+      const nextDual = this.settings.enableDualSubtitles === false;
+      this.settings.enableDualSubtitles = nextDual;
+      if (!nextDual) {
+        this.clearDualSubtitles();
+      }
+      this.renderDedicatedBar();
+      await this.callbacks.onSaveSettings({ enableDualSubtitles: nextDual });
+      if (!nextDual) {
+        this.clearDualSubtitles();
+      }
+    });
+
+    this.barContainer.querySelector('#yt-learn-sub1-select')?.addEventListener('change', async (e) => {
+      const val = e.target.value;
+      this.settings.primarySubtitleLang = val;
+      await this.callbacks.onSaveSettings({ primarySubtitleLang: val });
+    });
+
+    let sub2ChangeTimer = null;
+    this.barContainer.querySelector('#yt-learn-sub2-select')?.addEventListener('change', (e) => {
+      const val = e.target.value;
+      this.settings.secondarySubtitleLang = val;
+      if (sub2ChangeTimer) clearTimeout(sub2ChangeTimer);
+      sub2ChangeTimer = setTimeout(async () => {
+        await this.callbacks.onSaveSettings({ secondarySubtitleLang: val });
+      }, 300);
+    });
+
     this.barContainer.querySelector('#yt-learn-toggle-btn')?.addEventListener('click', async () => {
+      if (this.statusText === 'No Captions or Chapters' && typeof this.callbacks.onRetryMetadataCheck === 'function') {
+        this.setStatus('Checking...', 'preparing');
+        this.callbacks.onRetryMetadataCheck();
+        return;
+      }
       const nextEnabled = !isEnabled;
       this.settings.enabled = nextEnabled;
+      if (!nextEnabled) {
+        this.clearDualSubtitles();
+      }
       await this.callbacks.onSaveSettings({ enabled: nextEnabled });
       this.setStatus(nextEnabled ? 'Active' : 'Paused', nextEnabled ? 'ready' : 'disabled');
+    });
+
+    this.barContainer.querySelector('#yt-learn-collapse-bar-btn')?.addEventListener('click', () => {
+      this.barCollapsed = true;
+      this.renderDedicatedBar();
     });
 
     this.barContainer.querySelector('#yt-learn-classification-btn')?.addEventListener('click', () => {
@@ -373,62 +471,27 @@ export class UIManager {
   }
 
   /**
-   * Handles mouse movement anywhere along YouTube's progress bar container:
-   * 1. Calculates X-axis distance to all markers and activates the nearest one within tolerance.
-   * 2. Adjusts `--yt-learn-popup-bottom` so the popup clears YouTube's `.ytp-tooltip` thumbnail preview.
+   * Handles mouse movement on the progress bar.
+   * Direct marker hover is now used instead of broad X-axis proximity detection
+   * to prevent premature popups when scrubbing or hovering the timeline.
    */
-  handleProgressBarMouseMove(event) {
-    if (!this.markersLayer || !this.boundProgressBarHost) return;
-    const rect = this.boundProgressBarHost.getBoundingClientRect();
-    if (!rect || rect.width <= 0) return;
-
-    const cursorX = event.clientX - rect.left;
-    const { activeId } = UIManager.findNearestMarkerByX({
-      cursorX,
-      barWidthPx: rect.width,
-      breakpoints: this.cachedBreakpoints,
-      duration: this.cachedDuration,
-      currentActiveId: this.activeProximityBpId
-    });
-
-    if (activeId !== this.activeProximityBpId) {
-      this.activeProximityBpId = activeId;
-      const safeBottomPx = UIManager.computeSafePopupBottomOffsetPx(this.boundProgressBarHost);
-
-      const markerEls = this.markersLayer.querySelectorAll('.yt-learn-timeline-marker');
-      markerEls.forEach((el) => {
-        const isMatch = activeId && el.dataset.breakpointId === activeId;
-        el.classList.toggle('proximity-active', Boolean(isMatch));
-        if (isMatch) {
-          const tooltip = el.querySelector('.yt-learn-marker-tooltip');
-          if (tooltip) {
-            tooltip.style.setProperty('--yt-learn-popup-bottom', `${safeBottomPx}px`);
-          }
-        }
-      });
-    }
+  handleProgressBarMouseMove(_event) {
+    // Deprecated in favor of direct marker pointerenter/pointerleave
   }
 
   handleProgressBarMouseLeave() {
     this.activeProximityBpId = null;
     if (!this.markersLayer) return;
     this.markersLayer
-      .querySelectorAll('.yt-learn-timeline-marker.proximity-active')
-      .forEach((el) => el.classList.remove('proximity-active'));
+      .querySelectorAll('.yt-learn-timeline-marker.hover-active, .yt-learn-timeline-marker.proximity-active')
+      .forEach((el) => {
+        el.classList.remove('hover-active');
+        el.classList.remove('proximity-active');
+      });
   }
 
   attachProgressBarProximityListeners(progressBar) {
-    const host = progressBar.closest('.ytp-progress-bar-container') || progressBar;
-    if (this.boundProgressBarHost === host) return;
-
-    if (this.boundProgressBarHost) {
-      this.boundProgressBarHost.removeEventListener('mousemove', this.boundProgressBarMouseMove);
-      this.boundProgressBarHost.removeEventListener('mouseleave', this.boundProgressBarMouseLeave);
-    }
-
-    this.boundProgressBarHost = host;
-    this.boundProgressBarHost.addEventListener('mousemove', this.boundProgressBarMouseMove);
-    this.boundProgressBarHost.addEventListener('mouseleave', this.boundProgressBarMouseLeave);
+    // Direct marker hover is used; no broad progress bar proximity listeners needed.
   }
 
   renderTimelineMarkers(
@@ -468,8 +531,6 @@ export class UIManager {
       progressBar.parentElement.style.overflow = 'visible';
     }
 
-    this.attachProgressBarProximityListeners(progressBar);
-
     let layer = progressBar.querySelector('.yt-learn-timeline-markers-layer');
     if (!layer) {
       layer = document.createElement('div');
@@ -508,7 +569,7 @@ export class UIManager {
       );
 
       const marker = document.createElement('div');
-      marker.className = `yt-learn-timeline-marker strength-${strength}${isCompleted ? ' completed' : ''}${this.activeProximityBpId === bp.id ? ' proximity-active' : ''}`;
+      marker.className = `yt-learn-timeline-marker strength-${strength}${isCompleted ? ' completed' : ''}`;
       marker.style.left = `${clampedPct.toFixed(3)}%`;
       marker.dataset.breakpointId = bp.id;
       marker.dataset.timestamp = String(ts);
@@ -525,6 +586,20 @@ export class UIManager {
           <span>${this.escapeHtml(conceptLabel)}</span>
         </div>
       `;
+
+      // Direct hover detection: Only trigger when cursor is directly over this marker
+      marker.addEventListener('pointerenter', () => {
+        const dynamicSafeBottom = UIManager.computeSafePopupBottomOffsetPx(progressBar);
+        const tooltip = marker.querySelector('.yt-learn-marker-tooltip');
+        if (tooltip) {
+          tooltip.style.setProperty('--yt-learn-popup-bottom', `${dynamicSafeBottom}px`);
+        }
+        marker.classList.add('hover-active');
+      });
+
+      marker.addEventListener('pointerleave', () => {
+        marker.classList.remove('hover-active');
+      });
 
       const stopDrag = (ev) => {
         ev.stopPropagation();
@@ -597,7 +672,7 @@ export class UIManager {
     setTimeout(dismiss, 14000);
   }
 
-  showActivityOverlay(activity) {
+  showActivityOverlay(activity, restoredAnswer = null) {
     this.ensureOverlayHost();
     this.activePanel = 'activity';
     this.activeActivityId = activity.id;
@@ -622,11 +697,14 @@ export class UIManager {
             </span>
             <span class="yt-learn-badge difficulty">${this.escapeHtml(activity.difficulty || 'medium')}</span>
           </div>
-          <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-close-btn" title="Skip & Resume">✕</button>
+          <div class="yt-learn-header-actions" style="display:flex;gap:6px;align-items:center;">
+            <button class="yt-learn-btn-icon yt-learn-minimize-btn" id="yt-learn-minimize-btn" title="Minimize overlay to floating pill">─</button>
+            <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-close-btn" title="Skip & Resume">✕</button>
+          </div>
         </div>
 
         <div class="yt-learn-card-body" id="yt-learn-activity-body">
-          <h3 class="yt-learn-concept-title">${this.escapeHtml(activity.conceptName || 'Concept Check')}</h3>
+          <h3 class="yt-learn-concept-title">${this.escapeHtml(ActivityGenerator.cleanConceptName(activity.conceptName || 'Concept Check'))}</h3>
 
           ${
             activity.contextSummary
@@ -634,7 +712,7 @@ export class UIManager {
               : ''
           }
 
-          <div class="yt-learn-prompt">${this.escapeHtml(activity.prompt)}</div>
+          <div class="yt-learn-prompt">${this.escapeHtml(ActivityGenerator.sanitizePrompt(activity.prompt))}</div>
 
           ${
             activity.codeOrScenarioSnippet
@@ -675,8 +753,13 @@ export class UIManager {
     const { getValue, setDisabled } = this.mountActivityInputWidget(
       inputMount,
       activity,
-      isCodeOrMistake
+      isCodeOrMistake,
+      restoredAnswer
     );
+
+    wrapper.querySelector('#yt-learn-minimize-btn')?.addEventListener('click', () => {
+      this.minimizeActivity(activity, getValue());
+    });
 
     wrapper.querySelector('#yt-learn-close-btn')?.addEventListener('click', () => {
       if (this.isSubmitting) return;
@@ -754,7 +837,7 @@ export class UIManager {
           statusMount.innerHTML = '';
           setDisabled(false);
           this.restoreSubmitFooter(footerMount, activity, submitBtn);
-        });
+        }, userAnswer);
       } catch (err) {
         if (this.activePanel !== 'activity' || this.activeActivityId !== activity.id) {
           return;
@@ -764,13 +847,63 @@ export class UIManager {
         submitBtn.textContent = 'Submit Answer';
         statusMount.innerHTML = `
           <div class="yt-learn-error-banner" id="yt-learn-grading-error">
-            <strong>⚠️ Grading Error:</strong> ${this.escapeHtml(err?.message || 'Unable to evaluate answer right now. Your response has been preserved—please try submitting again.')}
+            <div style="font-weight:700;margin-bottom:4px;">⚠️ Grading Service Unavailable</div>
+            <div style="margin-bottom:8px;">${this.escapeHtml(err?.message || 'Unable to evaluate answer right now. Your response has been preserved.')}</div>
+            <div style="display:flex;gap:8px;">
+              <button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-error-retry-btn">🔄 Retry Grading</button>
+              <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-error-skip-btn">Skip Activity</button>
+            </div>
           </div>
         `;
+        statusMount.querySelector('#yt-learn-error-retry-btn')?.addEventListener('click', () => {
+          submitBtn.click();
+        });
+        statusMount.querySelector('#yt-learn-error-skip-btn')?.addEventListener('click', () => {
+          this.closeOverlay();
+          this.callbacks.onSkipActivity(activity);
+        });
       } finally {
         this.isSubmitting = false;
       }
     });
+  }
+
+  minimizeActivity(activity, currentAnswer = '') {
+    this.isActivityMinimized = true;
+    this.minimizedActivityData = {
+      activity,
+      userAnswer: currentAnswer
+    };
+    this.rootContainer.innerHTML = '';
+
+    const pill = document.createElement('div');
+    pill.className = 'yt-learn-minimized-pill';
+    pill.id = 'yt-learn-minimized-pill';
+    pill.setAttribute('role', 'button');
+    pill.setAttribute('tabindex', '0');
+    pill.setAttribute(
+      'aria-label',
+      `Learning question in progress: ${activity.conceptName || 'Question'}. Click to expand.`
+    );
+
+    pill.innerHTML = `
+      <div class="yt-learn-pill-left">
+        <span class="yt-learn-pill-dot"></span>
+        <span class="yt-learn-pill-badge">${this.escapeHtml(this.formatActivityType(activity.type))}</span>
+        <span class="yt-learn-pill-title">${this.escapeHtml(activity.conceptName || 'Question in progress')}</span>
+      </div>
+      <button class="yt-learn-pill-expand-btn" id="yt-learn-pill-restore-btn" title="Restore Activity">Expand ↗</button>
+    `;
+
+    const restore = () => {
+      this.isActivityMinimized = false;
+      const saved = this.minimizedActivityData;
+      this.minimizedActivityData = null;
+      this.showActivityOverlay(saved?.activity || activity, saved?.userAnswer);
+    };
+
+    pill.addEventListener('click', restore);
+    this.rootContainer.appendChild(pill);
   }
 
   restoreSubmitFooter(footerContainer, activity, originalSubmitBtn) {
@@ -796,7 +929,7 @@ export class UIManager {
     footerContainer.appendChild(originalSubmitBtn);
   }
 
-  mountActivityInputWidget(container, activity, isCodeOrMistake) {
+  mountActivityInputWidget(container, activity, isCodeOrMistake, initialValue = null) {
     const isChoice =
       ['multiple_choice', 'true_false', 'multiple_select'].includes(activity.type) &&
       Array.isArray(activity.options) &&
@@ -805,6 +938,14 @@ export class UIManager {
     if (isChoice) {
       const isMulti = activity.type === 'multiple_select';
       const selected = new Set();
+      if (initialValue !== null && initialValue !== undefined) {
+        if (Array.isArray(initialValue)) {
+          initialValue.forEach((v) => selected.add(Number(v)));
+        } else if (typeof initialValue === 'number') {
+          selected.add(initialValue);
+        }
+      }
+
       const list = document.createElement('div');
       list.className = 'yt-learn-options-list';
       const buttons = [];
@@ -812,7 +953,7 @@ export class UIManager {
       activity.options.forEach((optText, idx) => {
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'yt-learn-option-item';
+        btn.className = `yt-learn-option-item${selected.has(idx) ? ' selected' : ''}`;
         btn.innerHTML = `
           <span style="font-weight:700;color:#38bdf8;">${String.fromCharCode(65 + idx)}.</span>
           <span>${this.escapeHtml(optText)}</span>
@@ -864,6 +1005,9 @@ export class UIManager {
     textarea.className = `yt-learn-textarea ${isCodeOrMistake ? 'code-editor' : ''}`;
     textarea.id = 'yt-learn-answer-textarea';
     textarea.placeholder = placeholders[activity.type] || 'Type your answer here...';
+    if (typeof initialValue === 'string') {
+      textarea.value = initialValue;
+    }
 
     container.appendChild(textarea);
     setTimeout(() => textarea.focus(), 60);
@@ -878,40 +1022,46 @@ export class UIManager {
 
   /**
    * Renders evaluation feedback:
-   * - Issue 2: For `evaluationMode === 'objective'` (Multiple-Choice ABCD), renders a concise,
-   *   focused card (`Why Correct`, `Why Other Options Are Incorrect`, and `Core Concept Takeaway`)
-   *   without bloated per-option essays.
-   * - For `evaluationMode === 'open_ended'`, renders the full 4-criterion breakdown (`Accuracy`,
-   *   `Completeness`, `Reasoning`, `Clarity`), Overall Synthesis, and complete rewritten Improved Answer.
+   * - Objective multiple choice: renders a concise, focused card.
+   * - Open-ended: displays 0-100 numerical score, evaluation label, what was understood well,
+   *   missing points / misconceptions, and suggested answer.
    */
-  renderEvaluationFeedback(evalContainer, footerContainer, activity, evaluation, onRetry) {
+  renderEvaluationFeedback(evalContainer, footerContainer, activity, evaluation, onRetry, userAnswer = null) {
     if (!evalContainer) return;
 
-    const pct = evaluation.scorePercent ?? Math.round((evaluation.scoreNormalized ?? 0.7) * 100);
-    const verdictStatus = evaluation.verdictStatus || 'good_understanding';
+    const score = evaluation.score ?? evaluation.scorePercent ?? Math.round((evaluation.scoreNormalized ?? 0.7) * 100);
+    const evalVerdict = evaluation.evaluation || (score >= 80 ? 'correct' : score >= 50 ? 'partially_correct' : 'incorrect');
+    const verdictStatus = evalVerdict;
     const isObjective = evaluation.evaluationMode === 'objective';
 
     const verdictIcon =
-      verdictStatus === 'excellent_understanding' || verdictStatus === 'good_understanding' || verdictStatus === 'correct'
+      verdictStatus === 'correct' || verdictStatus === 'excellent_understanding' || verdictStatus === 'good_understanding'
         ? '✅'
-        : verdictStatus === 'partial_understanding' || verdictStatus === 'partially_correct'
+        : verdictStatus === 'partially_correct' || verdictStatus === 'partial_understanding'
         ? '⚖️'
         : '🧭';
+
+    const verdictLabel =
+      verdictStatus === 'correct'
+        ? 'Correct'
+        : verdictStatus === 'partially_correct'
+        ? 'Partially Correct'
+        : 'Needs Improvement';
 
     if (isObjective) {
       const mc = evaluation.conciseMcExplanation || {
         whyCorrect: evaluation.whatWasCorrect,
         whyOthersIncorrect: evaluation.missingOrIncorrect,
-        coreConceptTakeaway: evaluation.improvedAnswerExample
+        coreConceptTakeaway: evaluation.improvedAnswerExample || evaluation.suggestedAnswer
       };
 
       evalContainer.innerHTML = `
         <div class="yt-learn-eval-box" id="yt-learn-grading-result">
           <div class="yt-learn-eval-verdict ${verdictStatus}">
             <span id="yt-learn-verdict-label">
-              ${verdictIcon} ${this.escapeHtml(evaluation.verdictLabel || 'Correct')}
+              ${verdictIcon} ${this.escapeHtml(evaluation.verdictLabel || verdictLabel)}
             </span>
-            <span id="yt-learn-score-badge">${pct}% Score</span>
+            <span id="yt-learn-score-badge">${score}/100 Score</span>
           </div>
 
           <div class="yt-learn-mc-concise-card" id="yt-learn-mc-concise-explanation">
@@ -928,60 +1078,173 @@ export class UIManager {
         </div>
       `;
     } else {
-      const criteria = Array.isArray(evaluation.criteriaBreakdown) ? evaluation.criteriaBreakdown : [];
-      const overall = evaluation.overallFeedback || {};
+      const correctPoints = Array.isArray(evaluation.correctPoints)
+        ? evaluation.correctPoints
+        : evaluation.correctPoints ? [evaluation.correctPoints] : [];
+      const missingPoints = Array.isArray(evaluation.missingPoints)
+        ? evaluation.missingPoints
+        : evaluation.missingPoints ? [evaluation.missingPoints] : [];
+      const misconceptions = Array.isArray(evaluation.misconceptions)
+        ? evaluation.misconceptions
+        : evaluation.misconceptions ? [evaluation.misconceptions] : [];
+      const suggestedAnswer = evaluation.suggestedAnswer || evaluation.improvedAnswerExample || '';
+      const feedback = evaluation.feedback || evaluation.overallFeedback?.overallEvaluation || '';
+      const confidence = evaluation.confidence != null ? Math.round(evaluation.confidence * 100) : null;
 
-      const criteriaCardsHtml = criteria
-        .map(
-          (c) => `
-          <div class="yt-learn-criterion-card" data-criterion="${this.escapeHtml(c.name)}">
-            <div class="yt-learn-criterion-header">
-              <span>${this.escapeHtml(c.name)}</span>
-              <span style="color:${c.score >= 4 ? '#10b981' : c.score >= 2 ? '#f59e0b' : '#f87171'};">
-                ${this.escapeHtml(c.assessmentLabel)} (${c.score}/5)
-              </span>
-            </div>
-            <div class="yt-learn-criterion-measures">${this.escapeHtml(c.measures)}</div>
-            <div style="color:#a7f3d0;"><strong>✓ Did well:</strong> ${this.escapeHtml(c.whatUserDidWell)}</div>
-            <div style="color:#fde68a;"><strong>△ Missing / Incorrect:</strong> ${this.escapeHtml(c.whatWasMissingOrIncorrect)}</div>
-            <div style="color:#93c5fd;"><strong>→ Improvement:</strong> ${this.escapeHtml(c.specificImprovement)}</div>
-          </div>`
-        )
-        .join('');
+      const correctPointsHtml = correctPoints.length > 0 ? `
+        <div class="yt-learn-eval-points-box yt-learn-points-correct">
+          <div class="yt-learn-points-heading" style="color:#a7f3d0;font-weight:700;font-size:12.5px;">✓ What you understood well:</div>
+          <ul style="margin:4px 0 0 16px;padding:0;color:#e2e8f0;font-size:12px;line-height:1.5;">
+            ${correctPoints.map((pt) => `<li>${this.escapeHtml(pt)}</li>`).join('')}
+          </ul>
+        </div>
+      ` : '';
+
+      const missingPointsHtml = (missingPoints.length > 0 || misconceptions.length > 0) ? `
+        <div class="yt-learn-eval-points-box yt-learn-points-missing">
+          <div class="yt-learn-points-heading" style="color:#fde68a;font-weight:700;font-size:12.5px;">△ What was missing or needs improvement:</div>
+          <ul style="margin:4px 0 0 16px;padding:0;color:#e2e8f0;font-size:12px;line-height:1.5;">
+            ${missingPoints.map((pt) => `<li>${this.escapeHtml(pt)}</li>`).join('')}
+            ${misconceptions.map((m) => `<li><strong>Misconception:</strong> ${this.escapeHtml(m)}</li>`).join('')}
+          </ul>
+        </div>
+      ` : '';
+
+      const suggestedAnswerHtml = suggestedAnswer ? `
+        <div class="yt-learn-improved-answer-card" id="yt-learn-improved-answer">
+          <div style="font-weight:700;color:#10b981;font-size:12.5px;">💡 Suggested Model Answer</div>
+          <div id="yt-learn-improved-answer-body" style="color:#f8fafc;line-height:1.5;font-size:12px;">
+            ${this.escapeHtml(suggestedAnswer)}
+          </div>
+        </div>
+      ` : '';
 
       evalContainer.innerHTML = `
         <div class="yt-learn-eval-box" id="yt-learn-grading-result">
           <div class="yt-learn-eval-verdict ${verdictStatus}">
             <span id="yt-learn-verdict-label">
-              ${verdictIcon} ${this.escapeHtml(evaluation.verdictLabel || evaluation.qualitativeAssessment || 'Assessment Complete')}
+              ${verdictIcon} ${this.escapeHtml(evaluation.verdictLabel || verdictLabel)}
+              ${confidence != null ? `<span style="font-size:11px;font-weight:500;opacity:0.8;margin-left:6px;">(${confidence}% confidence)</span>` : ''}
             </span>
-            <span id="yt-learn-score-badge">Understanding: ${pct}%</span>
+            <span id="yt-learn-score-badge">Score: <strong>${score}/100</strong></span>
           </div>
 
-          <div style="font-weight:700;font-size:12.5px;color:#cbd5e1;">Detailed Criterion-by-Criterion Assessment</div>
-          <div class="yt-learn-criteria-list" id="yt-learn-criteria-breakdown">
-            ${criteriaCardsHtml}
-          </div>
+          ${feedback ? `<div style="font-size:12.5px;color:#cbd5e1;line-height:1.5;background:rgba(30,41,59,0.5);padding:8px 10px;border-radius:8px;">${this.escapeHtml(feedback)}</div>` : ''}
 
-          <div class="yt-learn-overall-card" id="yt-learn-overall-feedback">
-            <div style="font-weight:700;color:#38bdf8;font-size:12.5px;">Overall Tutor Synthesis</div>
-            <div><strong>Overall Evaluation:</strong> ${this.escapeHtml(overall.overallEvaluation || evaluation.feedback || '')}</div>
-            <div style="color:#a7f3d0;"><strong>★ Most Important Strength:</strong> ${this.escapeHtml(overall.mostImportantStrength || evaluation.whatWasCorrect || '')}</div>
-            <div style="color:#fde68a;"><strong>△ Most Important Weakness:</strong> ${this.escapeHtml(overall.mostImportantWeakness || evaluation.missingOrIncorrect || '')}</div>
-            <div style="color:#93c5fd;"><strong>🎯 Single Most Useful Next Step:</strong> ${this.escapeHtml(overall.singleMostUsefulImprovement || evaluation.followUpSuggestion || '')}</div>
-          </div>
-
-          <div class="yt-learn-improved-answer-card" id="yt-learn-improved-answer">
-            <div style="font-weight:700;color:#10b981;font-size:13px;">Suggested Improved Answer</div>
-            <div id="yt-learn-improved-answer-body" style="color:#f8fafc;line-height:1.5;">
-              ${this.escapeHtml(evaluation.improvedAnswerExample || '')}
-            </div>
-            <div id="yt-learn-improved-answer-why" style="font-size:11.5px;color:#a7f3d0;border-top:1px solid rgba(16,185,129,0.25);padding-top:6px;">
-              <strong>What makes this stronger:</strong> ${this.escapeHtml(evaluation.improvedAnswerExplanation || '')}
-            </div>
-          </div>
+          ${correctPointsHtml}
+          ${missingPointsHtml}
+          ${suggestedAnswerHtml}
         </div>
       `;
+    }
+
+    // Mount Interactive AI Tutor Follow-Up Dialog
+    const evalBox = evalContainer.querySelector('#yt-learn-grading-result');
+    if (evalBox) {
+      const followupContainer = document.createElement('div');
+      followupContainer.className = 'yt-learn-tutor-followup';
+      followupContainer.id = 'yt-learn-tutor-followup';
+      followupContainer.innerHTML = `
+        <div class="yt-learn-tutor-followup-header">
+          <div class="yt-learn-tutor-followup-title">💬 Have a question for the AI Tutor?</div>
+          <div class="yt-learn-tutor-followup-subtitle">Ask why an answer was graded this way, or clarify the concept</div>
+        </div>
+        <div class="yt-learn-tutor-chat-history" id="yt-learn-tutor-chat-history"></div>
+        <div class="yt-learn-tutor-input-row">
+          <input type="text" class="yt-learn-input yt-learn-tutor-input" id="yt-learn-tutor-input" placeholder="Type your follow-up question here..." />
+          <button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-tutor-ask-btn" type="button">Ask Tutor</button>
+        </div>
+      `;
+      evalBox.appendChild(followupContainer);
+
+      const tutorInput = followupContainer.querySelector('#yt-learn-tutor-input');
+      const tutorBtn = followupContainer.querySelector('#yt-learn-tutor-ask-btn');
+      const chatHistory = followupContainer.querySelector('#yt-learn-tutor-chat-history');
+
+      const submitFollowUp = async () => {
+        const query = (tutorInput?.value || '').trim();
+        if (!query || tutorBtn?.disabled) return;
+
+        // Append user bubble
+        const userBubble = document.createElement('div');
+        userBubble.className = 'yt-learn-chat-bubble yt-learn-chat-user';
+        userBubble.innerHTML = `<span class="yt-learn-chat-author">You:</span> ${this.escapeHtml(query)}`;
+        chatHistory.appendChild(userBubble);
+        tutorInput.value = '';
+
+        // Append tutor loading bubble
+        const tutorBubble = document.createElement('div');
+        tutorBubble.className = 'yt-learn-chat-bubble yt-learn-chat-tutor';
+        tutorBubble.innerHTML = `<span class="yt-learn-chat-author">🤖 AI Tutor:</span> <em>Thinking...</em>`;
+        chatHistory.appendChild(tutorBubble);
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+
+        tutorBtn.disabled = true;
+        tutorInput.disabled = true;
+        tutorBtn.textContent = 'Thinking...';
+
+        try {
+          let response = null;
+          if (typeof this.callbacks.onAskTutorFollowUp === 'function') {
+            response = await this.callbacks.onAskTutorFollowUp({
+              activity,
+              userAnswer,
+              evaluation,
+              userQuestion: query
+            });
+          }
+
+          if (response) {
+            tutorBubble.innerHTML = `
+              <div class="yt-learn-tutor-reply-header">
+                <span class="yt-learn-chat-author">🤖 AI Tutor:</span>
+              </div>
+              <div class="yt-learn-tutor-reply-body">
+                ${this.escapeHtml(response.directAnswer || response.feedback || 'Here is the explanation.')}
+              </div>
+              ${response.transcriptGrounding ? `
+                <div class="yt-learn-tutor-reply-quote">
+                  <em>"${this.escapeHtml(response.transcriptGrounding)}"</em>
+                </div>
+              ` : ''}
+              ${response.keyInsight ? `
+                <div class="yt-learn-tutor-reply-insight">
+                  💡 <strong>Key Insight:</strong> ${this.escapeHtml(response.keyInsight)}
+                </div>
+              ` : ''}
+            `;
+          } else {
+            tutorBubble.innerHTML = `
+              <div class="yt-learn-tutor-reply-header">
+                <span class="yt-learn-chat-author">🤖 AI Tutor:</span>
+              </div>
+              <div class="yt-learn-tutor-reply-body">
+                In this segment covering "${this.escapeHtml(activity.conceptName)}", the key takeaway is: ${this.escapeHtml(activity.exemplarAnswer || activity.conceptSummary || 'review the highlighted concept in the video')}.
+              </div>
+            `;
+          }
+        } catch (err) {
+          tutorBubble.innerHTML = `
+            <div style="color:#f87171;font-size:12px;">
+              ⚠️ AI Tutor is currently unreachable: ${this.escapeHtml(err.message || 'Network error')}.
+            </div>
+          `;
+        } finally {
+          tutorBtn.disabled = false;
+          tutorInput.disabled = false;
+          tutorBtn.textContent = 'Ask Tutor';
+          chatHistory.scrollTop = chatHistory.scrollHeight;
+          tutorInput?.focus?.();
+        }
+      };
+
+      tutorBtn?.addEventListener('click', submitFollowUp);
+      tutorInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          submitFollowUp();
+        }
+      });
     }
 
     evalContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1034,6 +1297,90 @@ export class UIManager {
     container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
+  setAvailableTracks(tracks = [], translationLanguages = []) {
+    this.availableTracks = Array.isArray(tracks) ? tracks : [];
+    this.translationLanguages = Array.isArray(translationLanguages) ? translationLanguages : [];
+    this.renderDedicatedBar();
+  }
+
+  buildSub1OptionsHtml(selectedLang = 'auto') {
+    let html = `<option value="auto" ${selectedLang === 'auto' ? 'selected' : ''}>Sub 1: Auto</option>`;
+    const seen = new Set(['auto']);
+
+    for (const t of this.availableTracks) {
+      if (t.languageCode && !seen.has(t.languageCode)) {
+        seen.add(t.languageCode);
+        const name = t.name || t.languageCode.toUpperCase();
+        html += `<option value="${this.escapeHtml(t.languageCode)}" ${selectedLang === t.languageCode ? 'selected' : ''}>Sub 1: ${this.escapeHtml(name)}</option>`;
+      }
+    }
+
+    const common = [
+      { code: 'en', name: 'English' },
+      { code: 'de', name: 'German' },
+      { code: 'es', name: 'Spanish' },
+      { code: 'fr', name: 'French' },
+      { code: 'ja', name: 'Japanese' },
+      { code: 'zh', name: 'Chinese' }
+    ];
+    for (const c of common) {
+      if (!seen.has(c.code)) {
+        seen.add(c.code);
+        html += `<option value="${c.code}" ${selectedLang === c.code ? 'selected' : ''}>Sub 1: ${c.name}</option>`;
+      }
+    }
+    return html;
+  }
+
+  buildSub2OptionsHtml(selectedLang = 'en') {
+    let html = `<option value="none" ${selectedLang === 'none' ? 'selected' : ''}>Sub 2: Off</option>`;
+    const seen = new Set(['none']);
+
+    // Common languages shown first for instant usability
+    const common = [
+      { code: 'en', name: 'English' },
+      { code: 'es', name: 'Spanish' },
+      { code: 'vi', name: 'Vietnamese' },
+      { code: 'zh-Hans', name: 'Chinese (Simplified)' },
+      { code: 'zh-Hant', name: 'Chinese (Traditional)' },
+      { code: 'ja', name: 'Japanese' },
+      { code: 'ko', name: 'Korean' },
+      { code: 'fr', name: 'French' },
+      { code: 'de', name: 'German' },
+      { code: 'pt', name: 'Portuguese' },
+      { code: 'it', name: 'Italian' },
+      { code: 'ru', name: 'Russian' },
+      { code: 'ar', name: 'Arabic' },
+      { code: 'hi', name: 'Hindi' }
+    ];
+    for (const c of common) {
+      if (!seen.has(c.code)) {
+        seen.add(c.code);
+        html += `<option value="${c.code}" ${selectedLang === c.code ? 'selected' : ''}>Sub 2: ${c.name}</option>`;
+      }
+    }
+
+    // Available YouTube authored tracks for this video
+    for (const t of this.availableTracks) {
+      if (t.languageCode && !seen.has(t.languageCode)) {
+        seen.add(t.languageCode);
+        const name = t.name || t.languageCode.toUpperCase();
+        html += `<option value="${this.escapeHtml(t.languageCode)}" ${selectedLang === t.languageCode ? 'selected' : ''}>Sub 2: ${this.escapeHtml(name)}</option>`;
+      }
+    }
+
+    // Additional translation languages
+    for (const tl of this.translationLanguages) {
+      if (tl.languageCode && !seen.has(tl.languageCode)) {
+        seen.add(tl.languageCode);
+        const name = tl.name || tl.languageCode.toUpperCase();
+        html += `<option value="${this.escapeHtml(tl.languageCode)}" ${selectedLang === tl.languageCode ? 'selected' : ''}>Sub 2: ${this.escapeHtml(name)}</option>`;
+      }
+    }
+
+    return html;
+  }
+
   showSettingsDrawer() {
     this.ensureOverlayHost();
     this.activePanel = 'settings';
@@ -1042,6 +1389,57 @@ export class UIManager {
     const s = this.settings;
     const wrapper = document.createElement('div');
     wrapper.className = 'yt-learn-overlay-backdrop';
+
+    let primaryOptionsHtml = `<option value="auto" ${s.primarySubtitleLang === 'auto' || !s.primarySubtitleLang ? 'selected' : ''}>Auto (Video Spoken Language)</option>`;
+    if (this.availableTracks.length > 0) {
+      primaryOptionsHtml += this.availableTracks
+        .map(
+          (t) =>
+            `<option value="${this.escapeHtml(t.languageCode)}" ${s.primarySubtitleLang === t.languageCode ? 'selected' : ''}>${this.escapeHtml(t.name || t.languageCode)} (${this.escapeHtml(t.languageCode)})</option>`
+        )
+        .join('');
+    } else {
+      primaryOptionsHtml += `
+        <option value="en" ${s.primarySubtitleLang === 'en' ? 'selected' : ''}>English</option>
+        <option value="de" ${s.primarySubtitleLang === 'de' ? 'selected' : ''}>German (Deutsch)</option>
+        <option value="es" ${s.primarySubtitleLang === 'es' ? 'selected' : ''}>Spanish (Español)</option>
+        <option value="fr" ${s.primarySubtitleLang === 'fr' ? 'selected' : ''}>French (Français)</option>
+        <option value="ja" ${s.primarySubtitleLang === 'ja' ? 'selected' : ''}>Japanese (日本語)</option>
+        <option value="zh" ${s.primarySubtitleLang === 'zh' ? 'selected' : ''}>Chinese (中文)</option>
+      `;
+    }
+
+    let secondaryOptionsHtml = '';
+    if (this.availableTracks.length > 0) {
+      secondaryOptionsHtml += '<optgroup label="Available YouTube Video Tracks">';
+      secondaryOptionsHtml += this.availableTracks
+        .map(
+          (t) =>
+            `<option value="${this.escapeHtml(t.languageCode)}" ${s.secondarySubtitleLang === t.languageCode ? 'selected' : ''}>${this.escapeHtml(t.name || t.languageCode)} (${this.escapeHtml(t.languageCode)})</option>`
+        )
+        .join('');
+      secondaryOptionsHtml += '</optgroup>';
+      secondaryOptionsHtml += '<optgroup label="YouTube Built-In Translations">';
+    }
+    secondaryOptionsHtml += `
+      <option value="en" ${s.secondarySubtitleLang === 'en' || !s.secondarySubtitleLang ? 'selected' : ''}>English</option>
+      <option value="es" ${s.secondarySubtitleLang === 'es' ? 'selected' : ''}>Spanish (Español)</option>
+      <option value="de" ${s.secondarySubtitleLang === 'de' ? 'selected' : ''}>German (Deutsch)</option>
+      <option value="fr" ${s.secondarySubtitleLang === 'fr' ? 'selected' : ''}>French (Français)</option>
+      <option value="ja" ${s.secondarySubtitleLang === 'ja' ? 'selected' : ''}>Japanese (日本語)</option>
+      <option value="zh-Hans" ${s.secondarySubtitleLang === 'zh-Hans' ? 'selected' : ''}>Chinese Simplified (简体)</option>
+      <option value="zh-Hant" ${s.secondarySubtitleLang === 'zh-Hant' ? 'selected' : ''}>Chinese Traditional (繁體)</option>
+      <option value="ko" ${s.secondarySubtitleLang === 'ko' ? 'selected' : ''}>Korean (한국어)</option>
+      <option value="pt" ${s.secondarySubtitleLang === 'pt' ? 'selected' : ''}>Portuguese (Português)</option>
+      <option value="it" ${s.secondarySubtitleLang === 'it' ? 'selected' : ''}>Italian (Italiano)</option>
+      <option value="ru" ${s.secondarySubtitleLang === 'ru' ? 'selected' : ''}>Russian (Русский)</option>
+      <option value="vi" ${s.secondarySubtitleLang === 'vi' ? 'selected' : ''}>Vietnamese (Tiếng Việt)</option>
+      <option value="ar" ${s.secondarySubtitleLang === 'ar' ? 'selected' : ''}>Arabic (العربية)</option>
+      <option value="hi" ${s.secondarySubtitleLang === 'hi' ? 'selected' : ''}>Hindi (हिन्दी)</option>
+    `;
+    if (this.availableTracks.length > 0) {
+      secondaryOptionsHtml += '</optgroup>';
+    }
 
     wrapper.innerHTML = `
       <div class="yt-learn-card">
@@ -1072,20 +1470,20 @@ export class UIManager {
           <div class="yt-learn-form-group">
             <label>Break Frequency Preset</label>
             <select class="yt-learn-select" id="yt-set-freq">
-              <option value="low" ${s.breakFrequency === 'low' ? 'selected' : ''}>Low (Every ~3–6 mins, major concepts)</option>
-              <option value="medium" ${s.breakFrequency === 'medium' ? 'selected' : ''}>Medium (Every ~1.5–4 mins)</option>
-              <option value="high" ${s.breakFrequency === 'high' ? 'selected' : ''}>High (Every ~45s–2.5 mins, intensive)</option>
+              <option value="low" ${s.breakFrequency === 'low' ? 'selected' : ''}>Low (Every ~7–12 mins, major milestones only)</option>
+              <option value="medium" ${s.breakFrequency === 'medium' || !s.breakFrequency ? 'selected' : ''}>Medium (Every ~5–10 mins, standard selective learning)</option>
+              <option value="high" ${s.breakFrequency === 'high' ? 'selected' : ''}>High (Every ~5–7.5 mins, intensive)</option>
             </select>
           </div>
 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
             <div class="yt-learn-form-group">
-              <label>Min Interval (sec)</label>
-              <input type="number" class="yt-learn-input" id="yt-set-min" value="${Number(s.minIntervalSeconds || 90)}" min="15" max="600" />
+              <label>Min Interval (sec) — 5 min default</label>
+              <input type="number" class="yt-learn-input" id="yt-set-min" value="${Number(s.minIntervalSeconds || 300)}" min="60" max="1200" />
             </div>
             <div class="yt-learn-form-group">
               <label>Max Interval (sec)</label>
-              <input type="number" class="yt-learn-input" id="yt-set-max" value="${Number(s.maxIntervalSeconds || 360)}" min="60" max="1200" />
+              <input type="number" class="yt-learn-input" id="yt-set-max" value="${Number(s.maxIntervalSeconds || 600)}" min="120" max="1800" />
             </div>
           </div>
 
@@ -1113,6 +1511,37 @@ export class UIManager {
             <span>Active Intervention: Redirect to YouTube Home (~5m on Non-Educational Videos)</span>
             <input type="checkbox" id="yt-set-intervention" ${s.enableNonEducationalIntervention !== false ? 'checked' : ''} />
           </div>
+
+          <div style="margin: 16px 0 8px; font-weight: 700; font-size: 13px; color: #38bdf8; display: flex; align-items: center; gap: 6px; border-top: 1px solid rgba(148, 163, 184, 0.2); padding-top: 12px;">
+            <span>💬 2nd Subtitle (Displayed alongside YouTube native captions)</span>
+          </div>
+          <div style="font-size:11.5px;color:#94a3b8;margin-bottom:8px;">
+            YouTube natively displays the main subtitle. The assistant downloads a 2nd subtitle on demand from YouTube and renders it alongside without hiding YouTube&#39;s captions.
+          </div>
+
+          <div class="yt-learn-checkbox-row">
+            <span>Enable 2nd Subtitle on Video Player</span>
+            <input type="checkbox" id="yt-set-dualsubs" ${s.enableDualSubtitles !== false ? 'checked' : ''} />
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="yt-learn-form-group">
+              <label>2nd Subtitle Language (On-Demand)</label>
+              <select class="yt-learn-select" id="yt-set-secondary-lang">
+                ${secondaryOptionsHtml}
+              </select>
+            </div>
+            <div class="yt-learn-form-group">
+              <label>Subtitle Font Size</label>
+              <select class="yt-learn-select" id="yt-set-sub-size">
+                <option value="small" ${s.subtitleFontSize === 'small' ? 'selected' : ''}>Small (13px)</option>
+                <option value="medium" ${s.subtitleFontSize === 'medium' || !s.subtitleFontSize ? 'selected' : ''}>Medium (16px)</option>
+                <option value="large" ${s.subtitleFontSize === 'large' ? 'selected' : ''}>Large (20px)</option>
+              </select>
+            </div>
+          </div>
+          <input type="hidden" id="yt-set-primary-lang" value="${this.escapeHtml(s.primarySubtitleLang || 'auto')}" />
+          <input type="checkbox" id="yt-set-hidenative" style="display:none;" />
         </div>
 
         <div class="yt-learn-card-footer">
@@ -1132,16 +1561,24 @@ export class UIManager {
         apiKey: wrapper.querySelector('#yt-set-apikey').value.trim(),
         model: wrapper.querySelector('#yt-set-model').value.trim() || 'gemini-3.8-flash',
         breakFrequency: wrapper.querySelector('#yt-set-freq').value,
-        minIntervalSeconds: Number(wrapper.querySelector('#yt-set-min').value) || 90,
-        maxIntervalSeconds: Number(wrapper.querySelector('#yt-set-max').value) || 360,
+        minIntervalSeconds: Math.max(60, Number(wrapper.querySelector('#yt-set-min').value) || 300),
+        maxIntervalSeconds: Math.max(120, Number(wrapper.querySelector('#yt-set-max').value) || 600),
         useYoutubeChapters: wrapper.querySelector('#yt-set-chapters').checked,
         useAiBreakpoints: wrapper.querySelector('#yt-set-aibp').checked,
         autoPause: wrapper.querySelector('#yt-set-autopause').checked,
         skipMinorActivities: wrapper.querySelector('#yt-set-skipminor').checked,
-        enableNonEducationalIntervention: wrapper.querySelector('#yt-set-intervention').checked
+        enableNonEducationalIntervention: wrapper.querySelector('#yt-set-intervention').checked,
+        enableDualSubtitles: wrapper.querySelector('#yt-set-dualsubs').checked,
+        primarySubtitleLang: wrapper.querySelector('#yt-set-primary-lang')?.value || 'auto',
+        secondarySubtitleLang: wrapper.querySelector('#yt-set-secondary-lang')?.value || 'en',
+        subtitleFontSize: wrapper.querySelector('#yt-set-sub-size')?.value || 'medium',
+        hideNativeSubtitles: wrapper.querySelector('#yt-set-hidenative')?.checked ?? false
       };
 
       this.settings = { ...this.settings, ...updated };
+      if (updated.enableDualSubtitles === false) {
+        this.clearDualSubtitles();
+      }
       await this.callbacks.onSaveSettings(updated);
       const msg = wrapper.querySelector('#yt-learn-save-msg');
       if (msg) msg.textContent = '✓ Saved!';
@@ -1225,6 +1662,166 @@ export class UIManager {
     this.isSubmitting = false;
     if (this.rootContainer) {
       this.rootContainer.innerHTML = '';
+    }
+  }
+
+  updateSettings(newSettings = {}) {
+    this.settings = { ...this.settings, ...newSettings };
+    if (this.dualSubtitlesContainer) {
+      this.dualSubtitlesContainer.className = `yt-learn-dual-subtitles-container font-size-${this.settings.subtitleFontSize || 'medium'}`;
+    }
+    if (this.settings.enableDualSubtitles === false) {
+      this.clearDualSubtitles();
+    }
+    this.renderDedicatedBar();
+  }
+
+  ensureDualSubtitlesMount() {
+    if (typeof document === 'undefined') return null;
+
+    const player =
+      document.getElementById('movie_player') ||
+      document.querySelector('.html5-video-player') ||
+      document.querySelector('video')?.parentElement;
+
+    if (!player) return null;
+
+    if (this.dualSubtitlesContainer && this.dualSubtitlesContainer.isConnected) {
+      if (this.dualSubtitlesContainer.parentElement !== player) {
+        player.appendChild(this.dualSubtitlesContainer);
+      }
+      return this.dualSubtitlesContainer;
+    }
+
+    const existing = document.getElementById('yt-learn-dual-subtitles-container');
+    if (existing) {
+      if (existing.parentElement !== player) {
+        player.appendChild(existing);
+      }
+      this.dualSubtitlesContainer = existing;
+      return existing;
+    }
+
+    const container = document.createElement('div');
+    container.id = 'yt-learn-dual-subtitles-container';
+    container.className = `yt-learn-dual-subtitles-container yt-learn-secondary-subtitle-container font-size-${this.settings.subtitleFontSize || 'medium'}`;
+    container.innerHTML = `
+      <div class="yt-learn-dual-subtitles-box yt-learn-secondary-subtitle-box" id="yt-learn-dual-subtitles-box" style="display:none;">
+        <div class="yt-learn-sub-line yt-learn-sub-primary" id="yt-learn-sub-primary" style="display:none;"></div>
+        <div class="yt-learn-sub-line yt-learn-sub-secondary yt-learn-secondary-subtitle-text" id="yt-learn-sub-secondary"></div>
+      </div>
+    `;
+
+    player.appendChild(container);
+    this.dualSubtitlesContainer = container;
+    return container;
+  }
+
+  renderDualSubtitles(activeCues, settings = this.settings) {
+    if (typeof document === 'undefined') return;
+
+    // Never hide YouTube native captions: One from YouTube, one from the app!
+    if (typeof document.body !== 'undefined' && document.body?.classList?.contains('yt-learn-hide-native-captions')) {
+      document.body.classList.remove('yt-learn-hide-native-captions');
+    }
+
+    if (settings.enableDualSubtitles === false || settings.secondarySubtitleLang === 'none') {
+      this.clearDualSubtitles();
+      return;
+    }
+
+    const primaryText = (typeof activeCues === 'object' ? activeCues?.primaryText || '' : '').trim();
+    const secondaryText = (typeof activeCues === 'string'
+      ? activeCues
+      : activeCues?.secondaryText || activeCues?.text || ''
+    ).trim();
+
+    const container = this.ensureDualSubtitlesMount();
+    if (!container) return;
+
+    const sizeClass = `font-size-${settings.subtitleFontSize || 'medium'}`;
+    if (!container.classList.contains(sizeClass)) {
+      container.classList.remove('font-size-small', 'font-size-medium', 'font-size-large');
+      container.classList.add(sizeClass);
+    }
+
+    const box = container.querySelector('#yt-learn-dual-subtitles-box');
+    const primaryEl = container.querySelector('#yt-learn-sub-primary');
+    const secondaryEl = container.querySelector('#yt-learn-sub-secondary');
+    if (!box || !secondaryEl) return;
+
+    if (primaryEl) {
+      primaryEl.textContent = primaryText;
+      primaryEl.style.display = 'none';
+    }
+
+    if (!secondaryText) {
+      box.style.display = 'none';
+      return;
+    }
+
+    box.style.display = 'inline-flex';
+    secondaryEl.textContent = secondaryText;
+    secondaryEl.style.display = 'block';
+  }
+
+  renderSecondarySubtitle(activeCueOrText, settings = this.settings) {
+    if (typeof activeCueOrText === 'string') {
+      return this.renderDualSubtitles({ secondaryText: activeCueOrText }, settings);
+    }
+    return this.renderDualSubtitles(activeCueOrText, settings);
+  }
+
+  ensureSecondarySubtitleMount() {
+    return this.ensureDualSubtitlesMount();
+  }
+
+  clearSecondarySubtitle() {
+    this.clearDualSubtitles();
+  }
+
+  clearDualSubtitles() {
+    if (this.dualSubtitlesContainer) {
+      const box = this.dualSubtitlesContainer.querySelector('#yt-learn-dual-subtitles-box');
+      if (box) {
+        box.style.display = 'none';
+      }
+    }
+    if (typeof document !== 'undefined' && document.body?.classList) {
+      document.body.classList.remove('yt-learn-hide-native-captions');
+    }
+  }
+
+  monitorNativeCaptionButton() {
+    if (typeof document === 'undefined') return;
+
+    const checkCcButtonState = () => {
+      const ccBtn = document.querySelector('.ytp-subtitles-button');
+      const isPressed = ccBtn && ccBtn.getAttribute('aria-pressed') === 'true';
+      if (isPressed) {
+        document.body.classList.add('yt-learn-native-cc-active');
+        document.body.classList.remove('yt-learn-hide-native-captions');
+      } else {
+        document.body.classList.remove('yt-learn-native-cc-active');
+      }
+    };
+
+    if (typeof window !== 'undefined' && !window.__YT_LEARN_CC_MONITORED__) {
+      window.__YT_LEARN_CC_MONITORED__ = true;
+      document.addEventListener('click', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.ytp-subtitles-button')) {
+          setTimeout(checkCcButtonState, 60);
+        }
+      }, true);
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'c' || e.key === 'C') {
+          const tag = (e.target?.tagName || '').toLowerCase();
+          if (tag !== 'input' && tag !== 'textarea' && !e.target?.isContentEditable) {
+            setTimeout(checkCcButtonState, 60);
+          }
+        }
+      }, true);
     }
   }
 

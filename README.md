@@ -82,4 +82,38 @@ youtube-ai-learning-assistant/
 3. **Test SPA Navigation & Stale-Request Protection**:
    - While watching Video A (or while an AI request is preparing), click a recommended video in YouTube's sidebar to navigate to Video B without a full page reload.
    - Verify the overlay closes cleanly, `sessionEpoch` increments, any in-flight request from Video A is aborted in `background.js`, and Video B's captions load cleanly.
-# you_ass_ai
+---
+
+## 4. Dual Subtitles & Terminal Subtitle Server (Zero 429 Server Blocks)
+
+To completely eliminate YouTube rate limits (HTTP 429) and ensure seamless companion subtitles on any video:
+The extension supports an ultra-lightweight **Terminal Subtitle Server**.
+
+### Option A: Automatic Subtitle Server
+Start the local server in your terminal:
+```bash
+npm run server
+```
+- Listens on `http://127.0.0.1:8765`.
+- Whenever you enable **💬 2nd Sub** or select a language on YouTube, the extension asks the local server.
+- The server automatically downloads only that 1 subtitle via terminal `yt-dlp` and sends it to the extension.
+- The Dedicated Bar displays `💬 2nd Sub: ON 🖥️` indicating the terminal companion server is connected.
+
+### Option B: Download Subtitles in Terminal on Demand
+You can download subtitles for any video directly using the CLI:
+```bash
+npm run get-sub -- <videoId or YouTube URL> [lang]
+```
+Examples:
+```bash
+npm run get-sub -- jNQXAC9IVRw en
+npm run get-sub -- "https://www.youtube.com/watch?v=02KLnAH2bVs" es
+```
+
+### Option C: Drop Any Custom Subtitle File
+You can drop any `.vtt` or `.srt` file directly into:
+```text
+subtitles_cache/<videoId>.<lang>.vtt
+```
+The extension will immediately load and display it on the video with 0 requests to YouTube!
+

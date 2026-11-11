@@ -79,21 +79,71 @@ async function handleMessage(message, tabId) {
     case 'FETCH_CAPTION_TRACK': {
       // Fetches a YouTube timedtext URL from background context if needed
       const { url } = payload;
-      if (!url || !url.startsWith('https://www.youtube.com/api/timedtext')) {
-        throw new Error('Invalid caption track URL.');
+      if (!url || !/^https?:\/\/([a-z0-9-]+\.)?(youtube(-nocookie)?\.com\/api\/timedtext|googlevideo\.com\/)/i.test(url)) {
+        return { ok: false, status: 400, error: 'Invalid caption track URL.' };
       }
-      const res = await fetch(url, { credentials: 'include' });
-      if (!res.ok) {
-        throw new Error(`Caption fetch HTTP ${res.status}`);
+      try {
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) {
+          return { ok: false, status: res.status, error: `Caption fetch HTTP ${res.status}` };
+        }
+        const text = await res.text();
+        return { ok: true, status: res.status, data: text };
+      } catch (err) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) {
+            return { ok: false, status: res.status, error: `Caption fetch HTTP ${res.status}` };
+          }
+          const text = await res.text();
+          return { ok: true, status: res.status, data: text };
+        } catch (fetchErr) {
+          return { ok: false, status: 0, error: fetchErr.message };
+        }
       }
-      const text = await res.text();
-      return { ok: true, data: text };
+    }
+
+    case 'FETCH_LOCAL_SUBTITLE': {
+      const { videoId, lang = 'en', port = 8765 } = payload || {};
+      if (!videoId) return { ok: false, error: 'Missing videoId' };
+      const url = `http://127.0.0.1:${port}/subtitles?videoId=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}`;
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout for terminal yt-dlp downloads
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (!res.ok) {
+          return { ok: false, status: res.status, error: `Local server returned ${res.status}` };
+        }
+        const data = await res.json();
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, isServerOffline: true, error: err.message };
+      }
+    }
+
+    case 'CHECK_LOCAL_SUB_SERVER': {
+      const { port = 8765 } = payload || {};
+      const url = `http://127.0.0.1:${port}/health`;
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1500);
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (!res.ok) return { ok: false, status: res.status };
+        const data = await res.json();
+        return { ok: true, data };
+      } catch {
+        return { ok: false, error: 'Local server not running' };
+      }
     }
 
     case 'AI_ANALYZE_SECTION':
     case 'AI_GENERATE_ACTIVITY':
     case 'AI_EVALUATE_ANSWER':
-    case 'AI_EXPLAIN_CONCEPT': {
+    case 'AI_EXPLAIN_CONCEPT':
+    case 'AI_TUTOR_FOLLOW_UP':
+    case 'AI_SYNTHESIZE_MILESTONE_TITLE': {
       return executeAiRequest(tabId, action, payload);
     }
 

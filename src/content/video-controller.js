@@ -93,6 +93,7 @@ export class VideoController {
       this.detachVideoListeners();
       this.currentVideoId = null;
       this.sessionEpoch += 1;
+      this.onVideoChanged({ videoId: null, sessionEpoch: this.sessionEpoch, metadata: null });
       return;
     }
 
@@ -106,6 +107,13 @@ export class VideoController {
     const capturedEpoch = this.sessionEpoch;
 
     this.attachToVideoElement();
+
+    // 1. Immediately notify UI so Dedicated Bar mounts right away without delay
+    this.onVideoChanged({
+      videoId: newVideoId,
+      sessionEpoch: capturedEpoch,
+      metadata: null
+    });
 
     const metadata = await this.fetchPlayerMetadataWithRetry(newVideoId, capturedEpoch);
 
@@ -204,7 +212,7 @@ export class VideoController {
   }
 
   async fetchPlayerMetadataWithRetry(expectedVideoId, expectedEpoch) {
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       if (this.currentVideoId !== expectedVideoId || this.sessionEpoch !== expectedEpoch) {
         return { videoId: expectedVideoId, captionTracks: [], chapters: [] };
       }
@@ -213,13 +221,23 @@ export class VideoController {
       if (
         metadata &&
         metadata.videoId === expectedVideoId &&
-        (metadata.captionTracks?.length > 0 || metadata.chapters?.length > 0 || attempt >= 2)
+        (metadata.captionTracks?.length > 0 || (metadata.chapters?.length > 0 && attempt >= 1) || attempt >= 3)
       ) {
         return metadata;
       }
 
-      await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
+      // Check DOM fallback if bridge metadata is missing caption tracks
+      const domMeta = this.extractMetadataFromDOM(expectedVideoId);
+      if (domMeta && (domMeta.captionTracks?.length > 0 || domMeta.chapters?.length > 0)) {
+        return domMeta;
+      }
+
+      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
     }
+
+    // Final DOM fallback before defaulting to empty metadata
+    const finalDomMeta = this.extractMetadataFromDOM(expectedVideoId);
+    if (finalDomMeta) return finalDomMeta;
 
     return {
       videoId: expectedVideoId,
@@ -234,6 +252,73 @@ export class VideoController {
     };
   }
 
+  extractMetadataFromDOM(videoId) {
+    if (typeof document === 'undefined') return null;
+    try {
+      let playerResponse = null;
+      const scripts = document.querySelectorAll('script');
+      for (const s of scripts) {
+        const text = s.textContent || '';
+        if (text.includes('ytInitialPlayerResponse =')) {
+          const marker = 'ytInitialPlayerResponse =';
+          const startIdx = text.indexOf(marker) + marker.length;
+          const endIdx = text.indexOf('};', startIdx);
+          if (endIdx !== -1) {
+            try {
+              playerResponse = JSON.parse(text.substring(startIdx, endIdx + 1).trim());
+              break;
+            } catch {}
+          }
+        }
+      }
+
+      if (!playerResponse) return null;
+
+      const videoDetails = playerResponse?.videoDetails || {};
+      const captionTracks =
+        playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks ||
+        playerResponse?.captions?.playerCaptionsRenderer?.captionTracks ||
+        [];
+      const translationLanguages =
+        playerResponse?.captions?.playerCaptionsTracklistRenderer?.translationLanguages ||
+        playerResponse?.captions?.playerCaptionsRenderer?.translationLanguages ||
+        [];
+
+      const title =
+        videoDetails.title ||
+        (document.title ? document.title.replace(/ - YouTube$/, '') : '') ||
+        videoId;
+      const shortDescription = videoDetails.shortDescription || '';
+      const lengthSeconds =
+        Number(videoDetails.lengthSeconds) ||
+        (this.videoElement && Number.isFinite(this.videoElement.duration)
+          ? Math.round(this.videoElement.duration)
+          : 0);
+
+      return {
+        videoId,
+        title,
+        shortDescription,
+        author: videoDetails.author || '',
+        lengthSeconds,
+        captionTracks: captionTracks.map((t) => ({
+          baseUrl: t.baseUrl || '',
+          languageCode: t.languageCode,
+          name: t.name?.simpleText || t.name?.runs?.[0]?.text || t.languageCode,
+          kind: t.kind || 'standard',
+          isTranslatable: t.isTranslatable !== false
+        })),
+        translationLanguages: translationLanguages.map((tl) => ({
+          languageCode: tl.languageCode,
+          name: tl.languageName?.simpleText || tl.languageName?.runs?.[0]?.text || tl.languageCode
+        })),
+        chapters: []
+      };
+    } catch {
+      return null;
+    }
+  }
+
   requestBridgeMetadata() {
     if (typeof window === 'undefined') return Promise.resolve(null);
     return new Promise((resolve) => {
@@ -241,7 +326,7 @@ export class VideoController {
       const timeout = setTimeout(() => {
         window.removeEventListener('message', onMessage);
         resolve(null);
-      }, 1200);
+      }, 450);
 
       function onMessage(event) {
         if (
@@ -252,7 +337,7 @@ export class VideoController {
         ) {
           clearTimeout(timeout);
           window.removeEventListener('message', onMessage);
-          resolve(event.data.payload);
+          resolve(event.data.metadata || event.data.payload || null);
         }
       }
 
@@ -261,6 +346,40 @@ export class VideoController {
         {
           type: 'YT_AI_LEARNING_REQUEST_METADATA',
           requestId
+        },
+        '*'
+      );
+    });
+  }
+
+  requestTimedtextViaBridge(url) {
+    if (typeof window === 'undefined' || !url) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const requestId = `tt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        resolve(null);
+      }, 5000);
+
+      function onMessage(event) {
+        if (
+          event.source === window &&
+          event.data &&
+          event.data.source === 'YT_AI_LEARNING_BRIDGE' &&
+          event.data.requestId === requestId
+        ) {
+          clearTimeout(timeout);
+          window.removeEventListener('message', onMessage);
+          resolve(event.data);
+        }
+      }
+
+      window.addEventListener('message', onMessage);
+      window.postMessage(
+        {
+          type: 'YT_AI_LEARNING_FETCH_TIMEDTEXT',
+          requestId,
+          url
         },
         '*'
       );

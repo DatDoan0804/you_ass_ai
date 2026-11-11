@@ -26,6 +26,7 @@ import { historyManager } from '../learning/history-manager.js';
 import { ContentAnalyzer } from '../ai/content-analyzer.js';
 import { ActivityGenerator } from '../ai/activity-generator.js';
 import { AnswerEvaluator } from '../ai/answer-evaluator.js';
+import { PromptBuilder } from '../ai/prompt-builder.js';
 import { SubtitleManager } from './subtitle-manager.js';
 import { BreakpointDetector } from './breakpoint-detector.js';
 import { VideoController } from './video-controller.js';
@@ -289,7 +290,19 @@ export class YouTubeLearningAssistantApp {
     this.isActivityActive = false;
     this.chunkSummaries = new Map();
 
-    this.subtitleManager = new SubtitleManager(this.requestHandler, this.log);
+    this.videoController = new VideoController({
+      onVideoChanged: this.handleVideoChanged.bind(this),
+      onTimeUpdate: this.handleTimeUpdate.bind(this),
+      onUserSeek: this.handleUserSeek.bind(this),
+      onDurationChange: this.handleDurationChange.bind(this),
+      logger: this.log
+    });
+
+    this.subtitleManager = new SubtitleManager(
+      this.requestHandler,
+      this.log,
+      (url) => this.videoController.requestTimedtextViaBridge(url)
+    );
     this.contentAnalyzer = new ContentAnalyzer(this.requestHandler);
     this.activityGenerator = new ActivityGenerator(this.requestHandler);
     this.answerEvaluator = new AnswerEvaluator(this.requestHandler);
@@ -311,19 +324,18 @@ export class YouTubeLearningAssistantApp {
       onSkipActivity: this.handleSkipActivity.bind(this),
       onContinueWatching: this.handleContinueWatching.bind(this),
       onRequestExplanation: this.handleRequestExplanation.bind(this),
+      onAskTutorFollowUp: this.handleAskTutorFollowUp.bind(this),
       onSaveSettings: this.handleSaveSettings.bind(this),
       onLoadDashboardData: this.handleLoadDashboardData.bind(this),
       onManualTriggerActivity: this.handleManualTriggerActivity.bind(this),
       onTimelineMarkerClick: this.handleTimelineMarkerClick.bind(this),
-      onOverrideClassification: this.handleOverrideClassification.bind(this)
-    });
-
-    this.videoController = new VideoController({
-      onVideoChanged: this.handleVideoChanged.bind(this),
-      onTimeUpdate: this.handleTimeUpdate.bind(this),
-      onUserSeek: this.handleUserSeek.bind(this),
-      onDurationChange: this.handleDurationChange.bind(this),
-      logger: this.log
+      onOverrideClassification: this.handleOverrideClassification.bind(this),
+      onRetryMetadataCheck: () => {
+        if (this.currentVideoId) {
+          this.log('[Breakpoint] Manual retry metadata check triggered.');
+          this.scheduleLateMetadataCheck(this.currentVideoId, this.sessionEpoch, 0);
+        }
+      }
     });
   }
 
@@ -333,6 +345,11 @@ export class YouTubeLearningAssistantApp {
     this.breakpointDetector.updateSettings(this.settings);
     this.uiManager.init(this.settings);
     this.videoController.init();
+    this.requestHandler('CHECK_LOCAL_SUB_SERVER', {}).then((res) => {
+      if (this.uiManager) {
+        this.uiManager.setLocalServerStatus(Boolean(res && res.ok));
+      }
+    }).catch(() => {});
   }
 
   getEffectiveDuration() {
@@ -363,6 +380,7 @@ export class YouTubeLearningAssistantApp {
       duration,
       this.breakpointDetector.triggeredIds
     );
+    this.triggerMilestoneTitleSynthesisIfNeeded(allBreakpoints);
   }
 
   handleDurationChange(newDuration) {
@@ -417,25 +435,65 @@ export class YouTubeLearningAssistantApp {
     this.lastSubtitleResult = null;
     this.isActivityActive = false;
     this.chunkSummaries.clear();
-    this.activityGenerator.resetHistory(videoId);
+    if (videoId) {
+      this.activityGenerator.resetHistory(videoId);
+    }
     this.breakpointDetector.reset();
     this.uiManager.closeOverlay();
+    this.uiManager.clearDualSubtitles();
     this.uiManager.setVideoClassification(null, false);
     this.syncTimelineMarkers();
 
-    await this.requestHandler('REGISTER_VIDEO_SESSION', { videoId, sessionEpoch }).catch(() => {});
-
-    if (this.settings.enabled === false) {
-      this.uiManager.setStatus('Off', 'disabled');
+    if (!videoId) {
+      this.uiManager.mountDedicatedBarInSafeSlot();
       return;
     }
 
+    this.uiManager.mountDedicatedBarInSafeSlot();
     this.uiManager.setStatus('Loading Captions...', 'preparing');
 
-    const subtitleResult = await this.subtitleManager.loadSubtitlesForVideo(this.videoMetadata);
+    if (!metadata) {
+      // Interim call on navigation: Dedicated Bar is mounted immediately with 'Loading Captions...'
+      // Full metadata and subtitles will be loaded once fetchPlayerMetadataWithRetry returns.
+      return;
+    }
+
+    await this.requestHandler('REGISTER_VIDEO_SESSION', { videoId, sessionEpoch }).catch(() => {});
+    this.requestHandler('CHECK_LOCAL_SUB_SERVER', {}).then((res) => {
+      if (this.uiManager) {
+        this.uiManager.setLocalServerStatus(Boolean(res && res.ok));
+      }
+    }).catch(() => {});
+
+    const demandSecondaryLang = (this.settings.enableDualSubtitles !== false)
+      ? (this.settings.secondarySubtitleLang || 'en')
+      : 'none';
+
+    const subtitleResult = await this.subtitleManager.loadSubtitlesForVideo(
+      this.videoMetadata,
+      this.settings.primarySubtitleLang || 'auto',
+      demandSecondaryLang,
+      { enableDualSubtitles: this.settings.enableDualSubtitles !== false }
+    );
     this.lastSubtitleResult = subtitleResult;
 
     if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
+      return;
+    }
+
+    this.uiManager.setAvailableTracks(
+      subtitleResult.availableTracks || this.subtitleManager.availableTracks || [],
+      this.videoMetadata.translationLanguages || []
+    );
+
+    if (this.settings.enableDualSubtitles !== false && this.subtitleManager) {
+      const currentTime = this.videoController.getCurrentTime();
+      const activeCues = this.subtitleManager.getActiveDualCues(currentTime);
+      this.uiManager.renderDualSubtitles(activeCues, this.settings);
+    }
+
+    if (this.settings.enabled === false) {
+      this.uiManager.setStatus('Off', 'disabled');
       return;
     }
 
@@ -473,6 +531,9 @@ export class YouTubeLearningAssistantApp {
     }
 
     const hasChapters = this.settings.useYoutubeChapters !== false && chapters.length > 0;
+    if (!subtitleResult.hasSubtitles && !hasChapters) {
+      this.scheduleLateMetadataCheck(videoId, sessionEpoch, 0);
+    }
     if (!subtitleResult.hasSubtitles && !hasChapters) {
       this.uiManager.setStatus('No Captions or Chapters', 'paused');
       return;
@@ -512,16 +573,70 @@ export class YouTubeLearningAssistantApp {
     }
   }
 
+  scheduleLateMetadataCheck(videoId, sessionEpoch, retryCount = 0) {
+    if (retryCount >= 4) return;
+    setTimeout(async () => {
+      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+      if (this.lastSubtitleResult?.hasSubtitles || this.videoMetadata?.captionTracks?.length > 0) {
+        return;
+      }
+
+      const metadata = await this.videoController.requestBridgeMetadata();
+      if (
+        metadata &&
+        metadata.videoId === videoId &&
+        metadata.captionTracks?.length > 0
+      ) {
+        this.log(
+          `[Breakpoint] Late caption tracks discovered: ${metadata.captionTracks?.length || 0} tracks.`
+        );
+        this.videoMetadata = { ...this.videoMetadata, ...metadata };
+        this.uiManager.setAvailableTracks(
+          metadata.captionTracks || [],
+          this.videoMetadata.translationLanguages || []
+        );
+
+        if (this.settings.enableDualSubtitles !== false && this.subtitleManager) {
+          await this.subtitleManager.downloadSecondaryTrackOnDemand(
+            this.settings.secondarySubtitleLang || 'en',
+            this.videoMetadata
+          );
+          const currentTime = this.videoController.getCurrentTime();
+          const activeCues = this.subtitleManager.getActiveDualCues(currentTime);
+          this.uiManager.renderDualSubtitles(activeCues, this.settings);
+        }
+      } else {
+        this.scheduleLateMetadataCheck(videoId, sessionEpoch, retryCount + 1);
+      }
+    }, 1200 * (retryCount + 1));
+  }
+
   handleUserSeek(newTime, videoId, sessionEpoch) {
     if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
     this.interventionManager.handleSeek(newTime);
     this.breakpointDetector.handleUserSeek(newTime);
     this.syncTimelineMarkers();
+
+    if (this.settings.enableDualSubtitles !== false && this.subtitleManager) {
+      const activeCues = this.subtitleManager.getActiveDualCues(newTime);
+      this.uiManager.renderDualSubtitles(activeCues, this.settings);
+    } else {
+      this.uiManager.clearDualSubtitles();
+    }
   }
 
   async handleTimeUpdate(currentTime, videoId, sessionEpoch, playbackRate = 1.0) {
-    if (this.settings.enabled === false) return;
     if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+
+    // Dual Subtitles Update (renders subtitles on video whenever enabled)
+    if (this.settings.enableDualSubtitles !== false && this.subtitleManager) {
+      const activeCues = this.subtitleManager.getActiveDualCues(currentTime);
+      this.uiManager.renderDualSubtitles(activeCues, this.settings);
+    } else {
+      this.uiManager.clearDualSubtitles();
+    }
+
+    if (this.settings.enabled === false) return;
 
     // Issue 4: If watching a non-educational video without override, track actual playback time
     // and redirect to https://www.youtube.com/ when the varied ~5-minute threshold is reached!
@@ -644,6 +759,11 @@ export class YouTubeLearningAssistantApp {
   }
 
   presentBreakpointActivity(activity, forceImmediate = false) {
+    if (activity) {
+      if (activity.prompt) activity.prompt = BreakpointDetector.sanitizePrompt(activity.prompt);
+      if (activity.conceptName) activity.conceptName = BreakpointDetector.cleanConceptName(activity.conceptName);
+    }
+
     if (!forceImmediate && (this.settings.autoPause === false || this.settings.notificationOnlyMode)) {
       this.log(`[Breakpoint] Activity triggered (notification toast)`);
       this.uiManager.showOptionalActivityToast(activity, () => {
@@ -781,11 +901,127 @@ export class YouTubeLearningAssistantApp {
     });
   }
 
+  async handleAskTutorFollowUp({ activity, userAnswer, evaluation, userQuestion }) {
+    const promptSpec = PromptBuilder.buildTutorFollowUpPrompt({
+      videoTitle: this.videoMetadata?.title || '',
+      activity,
+      userAnswer,
+      evaluation,
+      userQuestion,
+      transcriptText: activity?.transcriptExcerpt || activity?.conceptSummary || ''
+    });
+
+    try {
+      const res = await this.requestHandler('AI_TUTOR_FOLLOW_UP', {
+        videoId: this.currentVideoId,
+        sessionEpoch: this.sessionEpoch,
+        promptSpec
+      });
+
+      if (res && res.ok && res.data) {
+        return res.data;
+      }
+    } catch (err) {
+      console.warn('[YT-Learn] AI tutor follow-up request failed:', err);
+    }
+
+    return {
+      directAnswer: `Regarding "${userQuestion}": In this section covering "${activity.conceptName}", ${activity.exemplarAnswer || activity.conceptSummary || 'the concept works as demonstrated in the video'}.`,
+      transcriptGrounding: activity.transcriptVerification || activity.contextSummary || '',
+      keyInsight: activity.expectedKeyPoints?.[0] || 'Focus on how the core principle connects to the video demonstration.'
+    };
+  }
+
+  async triggerMilestoneTitleSynthesisIfNeeded(breakpoints) {
+    if (this.settings.useAiBreakpoints === false) return;
+    const candidates = (breakpoints || []).filter(
+      (bp) => bp.mergedConceptNames?.length > 1 && !bp.aiMilestoneSynthesized && !bp.isSynthesizingMilestone
+    );
+
+    for (const bp of candidates) {
+      bp.isSynthesizingMilestone = true;
+      const promptSpec = PromptBuilder.buildSynthesizeMilestonePrompt({
+        videoTitle: this.videoMetadata?.title || '',
+        conceptNames: bp.mergedConceptNames,
+        mergedSummary: bp.activity?.conceptSummary || ''
+      });
+
+      this.requestHandler('AI_SYNTHESIZE_MILESTONE_TITLE', {
+        videoId: this.currentVideoId,
+        sessionEpoch: this.sessionEpoch,
+        promptSpec
+      })
+        .then((res) => {
+          bp.isSynthesizingMilestone = false;
+          if (res && res.ok && res.data?.milestoneTitle) {
+            bp.aiMilestoneSynthesized = true;
+            if (bp.activity) {
+              bp.activity.conceptName = res.data.milestoneTitle;
+              if (bp.activity.prompt) {
+                bp.activity.prompt = BreakpointDetector.sanitizePrompt(bp.activity.prompt);
+              }
+              this.log(
+                `[Breakpoint] AI synthesized milestone title: "${res.data.milestoneTitle}" for breakpoint at ${bp.timestamp.toFixed(1)}s`
+              );
+              const currentBreakpoints = this.breakpointDetector.getAllScheduledBreakpoints();
+              this.uiManager.renderTimelineMarkers(
+                currentBreakpoints,
+                this.getEffectiveDuration(),
+                this.breakpointDetector.triggeredIds
+              );
+            }
+          }
+        })
+        .catch(() => {
+          bp.isSynthesizingMilestone = false;
+        });
+    }
+  }
+
   async handleSaveSettings(partialSettings) {
+    this.settings = { ...this.settings, ...partialSettings };
+    if (partialSettings.enableDualSubtitles === false) {
+      this.uiManager.clearDualSubtitles();
+    }
+
     const saved = await Database.saveSettings(partialSettings);
     this.settings = saved;
     this.breakpointDetector.updateSettings(saved);
     this.syncTimelineMarkers();
+
+    if (
+      'secondarySubtitleLang' in partialSettings ||
+      'enableDualSubtitles' in partialSettings
+    ) {
+      const targetVideoId = this.currentVideoId || this.videoMetadata?.videoId;
+      if (targetVideoId && this.settings.enableDualSubtitles !== false && this.subtitleManager) {
+        if (!this.videoMetadata) {
+          this.videoMetadata = { videoId: targetVideoId };
+        }
+        if (!this.videoMetadata.captionTracks || this.videoMetadata.captionTracks.length === 0) {
+          const freshMeta = await this.videoController.requestBridgeMetadata();
+          if (freshMeta && freshMeta.captionTracks?.length > 0) {
+            this.videoMetadata = { ...this.videoMetadata, ...freshMeta };
+            this.uiManager.setAvailableTracks(
+              this.videoMetadata.captionTracks,
+              this.videoMetadata.translationLanguages || []
+            );
+          }
+        }
+        // Only download 1 subtitle on user demand. The original one is handled natively by YouTube.
+        await this.subtitleManager.downloadSecondaryTrackOnDemand(
+          this.settings.secondarySubtitleLang || 'en',
+          this.videoMetadata
+        );
+        const currentTime = this.videoController.getCurrentTime();
+        const activeCues = this.subtitleManager.getActiveDualCues(currentTime);
+        this.uiManager.renderDualSubtitles(activeCues, this.settings);
+      } else if (this.settings.enableDualSubtitles === false) {
+        this.uiManager.clearDualSubtitles();
+      }
+    }
+
+    this.uiManager.updateSettings(saved);
     await this.requestHandler('SAVE_SETTINGS', { settings: saved }).catch(() => {});
   }
 
@@ -806,5 +1042,6 @@ if (
   !window.__YT_LEARN_DISABLE_AUTOSTART__
 ) {
   const app = new YouTubeLearningAssistantApp();
+  window.__ytLearnApp = app;
   app.start();
 }

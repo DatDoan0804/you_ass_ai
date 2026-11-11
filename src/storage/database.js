@@ -18,14 +18,19 @@ export const DEFAULT_SETTINGS = {
   model: 'gemini-3.8-flash',
   customEndpoint: 'http://localhost:11434/v1/chat/completions',
   breakFrequency: 'medium', // 'low' | 'medium' | 'high'
-  minIntervalSeconds: 90,
-  maxIntervalSeconds: 360,
+  minIntervalSeconds: 300, // 5 minutes default minimum interval
+  maxIntervalSeconds: 600,
   useYoutubeChapters: true,
   useAiBreakpoints: true,
   autoPause: true,
   notificationOnlyMode: false,
   skipMinorActivities: false,
   enableNonEducationalIntervention: true, // Redirects to YouTube home after ~5 mins of actual playback on non-educational videos
+  enableDualSubtitles: true, // Companion Subtitle overlay (displayed alongside YouTube native captions)
+  primarySubtitleLang: 'auto', // 'auto' | language code
+  secondarySubtitleLang: 'en', // default translation / companion language downloaded on demand
+  subtitleFontSize: 'medium', // 'small' | 'medium' | 'large'
+  hideNativeSubtitles: false, // Never hide YouTube's native captions (one from YouTube, one from app)
   preferredActivityTypes: [
     'multiple_choice',
     'short_answer',
@@ -282,6 +287,12 @@ export class Database {
           if (parsed.model === 'gemini-2.5-flash') {
             parsed.model = 'gemini-3.8-flash';
           }
+          if (parsed.minIntervalSeconds === 90 || parsed.minIntervalSeconds === 45) {
+            parsed.minIntervalSeconds = 300;
+          }
+          if (parsed.maxIntervalSeconds === 360 || (parsed.maxIntervalSeconds && parsed.maxIntervalSeconds < (parsed.minIntervalSeconds || 300))) {
+            parsed.maxIntervalSeconds = 600;
+          }
           return { ...DEFAULT_SETTINGS, ...parsed };
         }
       } catch {
@@ -297,6 +308,12 @@ export class Database {
           if (stored.model === 'gemini-2.5-flash') {
             stored.model = 'gemini-3.8-flash';
           }
+          if (stored.minIntervalSeconds === 90 || stored.minIntervalSeconds === 45) {
+            stored.minIntervalSeconds = 300;
+          }
+          if (stored.maxIntervalSeconds === 360 || (stored.maxIntervalSeconds && stored.maxIntervalSeconds < (stored.minIntervalSeconds || 300))) {
+            stored.maxIntervalSeconds = 600;
+          }
           resolve({ ...DEFAULT_SETTINGS, ...stored });
         } else {
           resolve({ ...DEFAULT_SETTINGS });
@@ -309,6 +326,12 @@ export class Database {
             const stored = res && res.yt_ai_learning_settings ? { ...res.yt_ai_learning_settings } : {};
             if (stored.model === 'gemini-2.5-flash') {
               stored.model = 'gemini-3.8-flash';
+            }
+            if (stored.minIntervalSeconds === 90 || stored.minIntervalSeconds === 45) {
+              stored.minIntervalSeconds = 300;
+            }
+            if (stored.maxIntervalSeconds === 360 || (stored.maxIntervalSeconds && stored.maxIntervalSeconds < (stored.minIntervalSeconds || 300))) {
+              stored.maxIntervalSeconds = 600;
             }
             resolve({
               ...DEFAULT_SETTINGS,
@@ -326,14 +349,14 @@ export class Database {
 
     if (partialSettings.breakFrequency && !partialSettings.minIntervalSeconds) {
       if (updated.breakFrequency === 'low') {
-        updated.minIntervalSeconds = 180;
-        updated.maxIntervalSeconds = 540;
+        updated.minIntervalSeconds = 420;
+        updated.maxIntervalSeconds = 720;
       } else if (updated.breakFrequency === 'medium') {
-        updated.minIntervalSeconds = 90;
-        updated.maxIntervalSeconds = 360;
+        updated.minIntervalSeconds = 300;
+        updated.maxIntervalSeconds = 600;
       } else if (updated.breakFrequency === 'high') {
-        updated.minIntervalSeconds = 45;
-        updated.maxIntervalSeconds = 180;
+        updated.minIntervalSeconds = 300;
+        updated.maxIntervalSeconds = 450;
       }
     }
 

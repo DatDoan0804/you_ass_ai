@@ -9,7 +9,9 @@
   ],
   "host_permissions": [
     "https://*.youtube.com/*",
-    "https://generativelanguage.googleapis.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "background": {
     "scripts": ["src/background/background.js"],

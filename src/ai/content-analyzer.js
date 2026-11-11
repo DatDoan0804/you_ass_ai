@@ -173,7 +173,8 @@ export class ContentAnalyzer {
     const educationalSignals = [
       /\b(tutorial|lecture|course|lesson|explained|introduction to|how .* works|deep dive|algorithm|programming|javascript|python|computer science|mathematics|calculus|linear algebra)\b/i,
       /\b(physics|chemistry|biology|neuroscience|quantum|thermodynamics|theorem|proof|grammar|vocabulary|pronunciation|syntax|compiler|architecture|engineering)\b/i,
-      /\b(history of|documentary|civilization|revolution|economic|philosophy|psychology|cognitive|research paper|university|mit|stanford|harvard)\b/i
+      /\b(history of|documentary|civilization|revolution|economic|philosophy|psychology|cognitive|research paper|university|mit|stanford|harvard)\b/i,
+      /\b(traffic|congestion|pricing|transit|subway|bus|transportation|urban planning|infrastructure|highway|civil engineering|climate|environmental policy|externalities|pigouvian|mta|toll|pedestrian)\b/i
     ];
 
     // Explanatory discourse markers inside the transcript itself

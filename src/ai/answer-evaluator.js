@@ -20,12 +20,17 @@ export const OBJECTIVE_ACTIVITY_TYPES = new Set([
 ]);
 
 const SYNONYM_EQUIVALENTS = [
-  ['parameter', 'parameters', 'placeholder', 'placeholders', 'input', 'inputs', 'variable', 'variables', 'signature'],
-  ['argument', 'arguments', 'value', 'values', 'passed', 'invocation', 'called', 'calling', 'invoke', 'supplied'],
+  ['parameter', 'parameters', 'placeholder', 'placeholders', 'input', 'inputs', 'variable', 'variables', 'variabel', 'signature'],
+  ['argument', 'arguments', 'value', 'values', 'valus', 'passed', 'invocation', 'called', 'calling', 'invoke', 'supplied', 'data', 'information'],
   ['return', 'returns', 'returned', 'output', 'outputs', 'result', 'sends', 'back', 'stops', 'terminates', 'exits'],
   ['reusable', 'reuse', 'modular', 'avoid', 'prevent', 'repetition', 'duplicate', 'duplication', 'block'],
   ['cause', 'causes', 'because', 'therefore', 'consequence', 'effect', 'results', 'leads', 'triggers'],
-  ['closure', 'closures', 'lexical', 'scope', 'outer', 'inner', 'environment', 'retains']
+  ['closure', 'closures', 'lexical', 'scope', 'outer', 'inner', 'environment', 'retains'],
+  ['store', 'stores', 'stor', 'storage', 'storing', 'container', 'box', 'keep', 'keeping', 'holds', 'holding', 'saved', 'saving', 'place'],
+  ['name', 'named', 'identifier', 'label', 'labeled', 'reference', 'referenced'],
+  ['retrieve', 'retrieved', 'access', 'accessed', 'acsess', 'find', 'get', 'reuse', 'reused', 'read', 'reading'],
+  ['modify', 'modified', 'update', 'updated', 'change', 'changed', 'chnage', 'manipulate', 'manipulated'],
+  ['memory', 'ram', 'computer', 'program', 'system', 'space']
 ];
 
 export class AnswerEvaluator {
@@ -128,21 +133,24 @@ export class AnswerEvaluator {
   }
 
   static normalizeEvaluationResult(raw, activity = {}, userAnswer = '', isObjective = false) {
-    const scoreNormalized = Math.max(
-      0,
-      Math.min(1, Number(raw?.scoreNormalized ?? (raw?.isCorrect ? 0.88 : 0.45)))
-    );
-    const scorePercent = Math.round(scoreNormalized * 100);
+    const rawScore = typeof raw?.score === 'number' ? Math.max(0, Math.min(100, Math.round(raw.score))) : null;
+    const scoreNormalized = rawScore !== null
+      ? rawScore / 100
+      : Math.max(
+          0,
+          Math.min(1, Number(raw?.scoreNormalized ?? (raw?.isCorrect ? 0.9 : 0.4)))
+        );
+    const score100 = rawScore !== null ? rawScore : Math.round(scoreNormalized * 100);
     const evaluationMode = isObjective ? 'objective' : 'open_ended';
 
     let qualitativeAssessment = '';
     let verdictStatus = '';
 
     if (isObjective) {
-      if (scoreNormalized >= 0.85) {
+      if (score100 >= 85) {
         qualitativeAssessment = 'Correct';
         verdictStatus = 'correct';
-      } else if (scoreNormalized >= 0.4) {
+      } else if (score100 >= 40) {
         qualitativeAssessment = 'Partially Correct';
         verdictStatus = 'partially_correct';
       } else {
@@ -150,13 +158,13 @@ export class AnswerEvaluator {
         verdictStatus = 'incorrect';
       }
     } else {
-      if (scoreNormalized >= 0.85) {
+      if (score100 >= 85) {
         qualitativeAssessment = 'Excellent understanding';
         verdictStatus = 'excellent_understanding';
-      } else if (scoreNormalized >= 0.65) {
+      } else if (score100 >= 65) {
         qualitativeAssessment = 'Good understanding';
         verdictStatus = 'good_understanding';
-      } else if (scoreNormalized >= 0.4) {
+      } else if (score100 >= 40) {
         qualitativeAssessment = 'Partially demonstrated understanding';
         verdictStatus = 'partial_understanding';
       } else {
@@ -164,6 +172,9 @@ export class AnswerEvaluator {
         verdictStatus = 'needs_improvement';
       }
     }
+
+    const evaluation = raw?.evaluation || (score100 >= 65 ? 'correct' : score100 >= 40 ? 'partially_correct' : 'incorrect');
+    const confidence = typeof raw?.confidence === 'number' ? Math.max(0, Math.min(1, raw.confidence)) : 0.95;
 
     const r = raw?.rubricScores || {};
     const defaultRubricVal = Math.max(1, Math.round(scoreNormalized * 5));
@@ -187,13 +198,33 @@ export class AnswerEvaluator {
         : `Include the complete mechanism and supporting details for "${activity.conceptName || 'this concept'}".`);
 
     const improvedAnswerExample = AnswerEvaluator.buildCompleteImprovedAnswer({
-      rawImprovedAnswer: raw?.improvedAnswerExample,
+      rawImprovedAnswer: raw?.suggestedAnswer || raw?.improvedAnswerExample,
       activity,
       userAnswer,
       whatWasCorrect,
       missingOrIncorrect,
       scoreNormalized
     });
+
+    const suggestedAnswer = raw?.suggestedAnswer || improvedAnswerExample;
+
+    const correctPoints = Array.isArray(raw?.correctPoints) && raw.correctPoints.length > 0
+      ? raw.correctPoints
+      : whatWasCorrect && scoreNormalized >= 0.3
+      ? [whatWasCorrect]
+      : [];
+
+    const missingPoints = Array.isArray(raw?.missingPoints) && raw.missingPoints.length > 0
+      ? raw.missingPoints
+      : scoreNormalized < 0.85 && missingOrIncorrect
+      ? [missingOrIncorrect]
+      : [];
+
+    const misconceptions = Array.isArray(raw?.misconceptions) && raw.misconceptions.length > 0
+      ? raw.misconceptions
+      : raw?.misunderstanding
+      ? [raw.misunderstanding]
+      : [];
 
     const improvedAnswerExplanation =
       raw?.improvedAnswerExplanation ||
@@ -219,24 +250,31 @@ export class AnswerEvaluator {
     );
 
     return {
+      score: score100,
+      scorePercent: score100,
+      scoreNormalized,
+      evaluation,
+      confidence,
       evaluationMode,
-      isCorrect: scoreNormalized >= 0.65,
+      isCorrect: score100 >= 65,
       qualitativeAssessment,
       verdictStatus,
-      scoreNormalized,
-      scorePercent,
       verdictLabel: isObjective
         ? qualitativeAssessment
         : raw?.qualitativeAssessment && !/^(correct|incorrect)$/i.test(raw.qualitativeAssessment)
           ? raw.qualitativeAssessment
           : qualitativeAssessment,
-      feedback: raw?.conciseMcExplanation
+      feedback: raw?.feedback || (raw?.conciseMcExplanation
         ? `${raw.conciseMcExplanation.whyCorrect} ${raw.conciseMcExplanation.whyOthersIncorrect}`
-        : overallFeedback.overallEvaluation,
+        : overallFeedback.overallEvaluation),
+      correctPoints,
+      missingPoints,
+      misconceptions,
+      suggestedAnswer,
       conciseMcExplanation: raw?.conciseMcExplanation || null,
       whatWasCorrect,
       missingOrIncorrect,
-      misunderstanding: raw?.misunderstanding || '',
+      misunderstanding: raw?.misunderstanding || (misconceptions[0] || ''),
       improvedAnswerExample,
       improvedAnswerExplanation,
       followUpSuggestion:
@@ -524,10 +562,27 @@ export class AnswerEvaluator {
       (activity.expectedKeyPoints && activity.expectedKeyPoints[activity.expectedKeyPoints.length - 1]) ||
       underlyingConcept;
 
+    const score100 = isExactMatch ? 100 : overlapCount > 0 ? 50 : 0;
+    const evaluation = isExactMatch ? 'correct' : overlapCount > 0 ? 'partially_correct' : 'incorrect';
+    const correctPoints = isExactMatch
+      ? [`Option ${correctLetter} accurately captures the underlying mechanism: ${underlyingConcept}`]
+      : overlapCount > 0
+      ? [`You identified part of the correct response (${selectedLetter}).`]
+      : [];
+    const missingPoints = isExactMatch ? [] : [whyOthersIncorrect];
+    const misconceptions = isExactMatch ? [] : [whyOthersIncorrect];
+
     return AnswerEvaluator.normalizeEvaluationResult(
       {
-        isCorrect: isExactMatch,
+        score: score100,
         scoreNormalized,
+        evaluation,
+        confidence: 1.0,
+        isCorrect: isExactMatch,
+        correctPoints,
+        missingPoints,
+        misconceptions,
+        suggestedAnswer: whyCorrect,
         conciseMcExplanation: {
           whyCorrect,
           whyOthersIncorrect,
@@ -566,7 +621,7 @@ export class AnswerEvaluator {
       'the', 'and', 'that', 'this', 'with', 'from', 'what', 'when', 'where', 'which',
       'have', 'will', 'about', 'into', 'your', 'they', 'their', 'there', 'been', 'were',
       'section', 'chapter', 'video', 'instructor', 'explain', 'watched', 'just', 'define',
-      'functions', 'function', 'inside', 'values', 'value', 'actual', 'take', 'takes'
+      'actual', 'take', 'takes'
     ]);
 
     const extractTerms = (str) =>
@@ -576,21 +631,48 @@ export class AnswerEvaluator {
             .toLowerCase()
             .replace(/[^a-z0-9\s]/g, ' ')
             .split(/\s+/)
-            .filter((w) => w.length >= 4 && !stopWords.has(w))
+            .filter((w) => w.length >= 3 && !stopWords.has(w))
         )
       );
 
+    function levenshtein(a, b) {
+      if (Math.abs(a.length - b.length) > 2) return 99;
+      if (a === b) return 0;
+      const matrix = [];
+      for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+      for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          if (b.charAt(i - 1) === a.charAt(j - 1)) {
+            matrix[i][j] = matrix[i - 1][j - 1];
+          } else {
+            matrix[i][j] = Math.min(
+              matrix[i - 1][j - 1] + 1,
+              matrix[i][j - 1] + 1,
+              matrix[i - 1][j] + 1
+            );
+          }
+        }
+      }
+      return matrix[b.length][a.length];
+    }
+
     const areTermsSemanticallyEquivalent = (uw, rw) => {
       if (uw === rw) return true;
-      if (uw.length >= 5 && rw.length >= 5 && uw.slice(0, 5) === rw.slice(0, 5)) return true;
       for (const group of SYNONYM_EQUIVALENTS) {
         if (group.includes(uw) && group.includes(rw)) return true;
+      }
+      if (uw.length >= 4 && rw.length >= 4) {
+        if (uw.startsWith(rw.slice(0, 4)) || rw.startsWith(uw.slice(0, 4))) return true;
+        if (levenshtein(uw, rw) <= 1) return true;
       }
       return false;
     };
 
     const userWords = extractTerms(lowerText);
-    const referenceSource = `${activity.exemplarAnswer || ''} ${(activity.expectedKeyPoints || []).join(' ')} ${activity.transcriptExcerpt || ''} ${activity.contextSummary || ''}`;
+    const rubricPoints = Array.isArray(activity.gradingRubric?.essentialPoints) ? activity.gradingRubric.essentialPoints.join(' ') : '';
+    const rubricAlts = Array.isArray(activity.gradingRubric?.acceptableAlternatives) ? activity.gradingRubric.acceptableAlternatives.join(' ') : '';
+    const referenceSource = `${activity.exemplarAnswer || ''} ${activity.expectedAnswer || ''} ${(activity.expectedKeyPoints || []).join(' ')} ${rubricPoints} ${rubricAlts} ${activity.transcriptExcerpt || ''} ${activity.contextSummary || ''}`;
     const refKeywords = extractTerms(referenceSource);
 
     const matchedKeywords = userWords.filter((uw) =>
@@ -600,7 +682,9 @@ export class AnswerEvaluator {
     const keyPoints =
       Array.isArray(activity.expectedKeyPoints) && activity.expectedKeyPoints.length > 0
         ? activity.expectedKeyPoints
-        : [activity.exemplarAnswer || referenceSource];
+        : Array.isArray(activity.gradingRubric?.essentialPoints) && activity.gradingRubric.essentialPoints.length > 0
+        ? activity.gradingRubric.essentialPoints
+        : [activity.exemplarAnswer || activity.expectedAnswer || referenceSource];
 
     let coveredKeyPoints = 0;
     const missedKeyPointDescriptions = [];
@@ -622,56 +706,136 @@ export class AnswerEvaluator {
       keyPoints.length > 0 ? coveredKeyPoints / keyPoints.length : 0;
 
     const hasCausalReasoning =
-      /\b(because|therefore|so that|allows|prevents|when|causes|results in|by passing|sends back|stops)\b/i.test(text);
+      /\b(because|therefore|so that|allows|prevents|when|causes|results in|by passing|sends back|stops|modifies|updates|stores|retains)\b/i.test(text);
 
     const isIDontKnow = /^(i don'?t know|idk|no idea|not sure|none|nothing|skip|test|asdf)$/i.test(text);
 
-    let scoreNormalized = 0.2;
-    if (isIDontKnow || wordCount < 3 || matchedKeywords.length === 0) {
-      scoreNormalized = 0.15;
-    } else if (keyPointCoverageRatio >= 0.75 && wordCount >= 9) {
-      scoreNormalized = Math.min(1.0, 0.85 + (hasCausalReasoning ? 0.1 : 0.05));
-    } else if (keyPointCoverageRatio >= 0.5 && wordCount >= 8) {
-      scoreNormalized = 0.72;
-    } else if (keyPointCoverageRatio >= 0.25 || matchedKeywords.length >= 1) {
-      scoreNormalized = 0.52;
-    } else {
-      scoreNormalized = 0.22;
+    // Check for common misconceptions from the rubric
+    const misconceptionsList = Array.isArray(activity.gradingRubric?.commonMisconceptions)
+      ? activity.gradingRubric.commonMisconceptions
+      : [];
+    let detectedMisconception = null;
+    const metaWords = new Set([
+      'can', 'could', 'should', 'would', 'once', 'make', 'makes', 'assume', 'assuming',
+      'believe', 'believing', 'confuse', 'confusing', 'think', 'thinking', 'variable',
+      'variables', 'concept', 'about', 'never', 'declared', 'always', 'only', 'changed'
+    ]);
+
+    for (const misc of misconceptionsList) {
+      const miscTerms = extractTerms(misc).filter((t) => !metaWords.has(t));
+      if (miscTerms.length === 0) continue;
+      const matchedMiscWords = miscTerms.filter((mt) => userWords.some((uw) => areTermsSemanticallyEquivalent(uw, mt)));
+      if (matchedMiscWords.length >= 2 || (matchedMiscWords.length >= 1 && miscTerms.length <= 2)) {
+        detectedMisconception = misc;
+        break;
+      }
     }
 
+    // Check for acceptable alternative valid explanations
+    const acceptableAlts = Array.isArray(activity.gradingRubric?.acceptableAlternatives)
+      ? activity.gradingRubric.acceptableAlternatives
+      : [];
+    let matchesAlternative = false;
+    for (const alt of acceptableAlts) {
+      const altTerms = extractTerms(alt);
+      const matchedUserWords = userWords.filter((uw) =>
+        altTerms.some((at) => areTermsSemanticallyEquivalent(uw, at))
+      );
+      if (matchedUserWords.length >= 3 && matchedUserWords.length >= Math.ceil(altTerms.length * 0.45)) {
+        matchesAlternative = true;
+        break;
+      }
+    }
+
+    let score100 = 20;
+    if (isIDontKnow || wordCount < 2 || (matchedKeywords.length === 0 && !matchesAlternative)) {
+      score100 = 5;
+    } else if (detectedMisconception) {
+      score100 = 30;
+    } else if (matchesAlternative || keyPointCoverageRatio >= 0.6 || (matchedKeywords.length >= 3 && keyPointCoverageRatio >= 0.45)) {
+      // Full credit for semantic equivalence even if concise or worded differently
+      score100 = hasCausalReasoning || wordCount >= 5 ? 95 : 88;
+    } else if (keyPointCoverageRatio >= 0.25 || matchedKeywords.length >= 2) {
+      // Good partial credit (main concept understood, missing secondary detail)
+      score100 = 65;
+    } else if (keyPointCoverageRatio >= 0.1 || matchedKeywords.length >= 1) {
+      // Partial credit
+      score100 = 50;
+    } else {
+      score100 = 20;
+    }
+
+    const scoreNormalized = score100 / 100;
+
     const accuracyScore =
-      scoreNormalized >= 0.8 ? 5 : scoreNormalized >= 0.65 ? 4 : scoreNormalized >= 0.4 ? 3 : 1;
+      score100 >= 85 ? 5 : score100 >= 65 ? 4 : score100 >= 40 ? 3 : 1;
     const completenessScore =
-      keyPointCoverageRatio >= 0.8 ? 5 : keyPointCoverageRatio >= 0.55 ? 4 : keyPointCoverageRatio >= 0.3 ? 3 : 1;
+      score100 >= 85 ? 5 : score100 >= 65 ? 4 : score100 >= 40 ? 3 : 1;
     const reasoningScore =
-      scoreNormalized >= 0.75 && hasCausalReasoning
+      score100 >= 80 && hasCausalReasoning
         ? 5
-        : scoreNormalized >= 0.5
+        : score100 >= 50
           ? 3
           : 1;
-    const clarityScore = wordCount >= 12 ? 5 : wordCount >= 6 ? 4 : 2;
+    const clarityScore = wordCount >= 6 ? 5 : wordCount >= 3 ? 4 : 2;
+
+    const correctPoints =
+      score100 >= 65
+        ? [`You accurately conveyed the core concept (${matchedKeywords.slice(0, 5).join(', ') || 'essential mechanism'}) in your explanation.`]
+        : score100 >= 40
+          ? [`You identified parts of the concept (${matchedKeywords.slice(0, 3).join(', ')}).`]
+          : [];
+
+    const missingPoints =
+      score100 >= 88
+        ? []
+        : missedKeyPointDescriptions.length > 0
+        ? missedKeyPointDescriptions.slice(0, 2)
+        : [`To complete the explanation, connect how the mechanism produces its resulting outcome or state.`];
+
+    const misconceptions =
+      detectedMisconception
+        ? [detectedMisconception]
+        : score100 < 45 && wordCount >= 4 && !isIDontKnow
+        ? [`The response does not yet reflect how "${activity.conceptName}" was taught in the video.`]
+        : [];
 
     const whatWasCorrect =
-      scoreNormalized >= 0.65
-        ? `You demonstrated strong grasp of the core ideas (${matchedKeywords.slice(0, 5).join(', ')}) in your own words.`
-        : scoreNormalized >= 0.4
-          ? `You correctly identified part of the concept (${matchedKeywords.slice(0, 4).join(', ')}), showing partial understanding of "${activity.conceptName}".`
-          : 'Your response did not yet address the specific mechanism or concepts covered in this segment.';
+      correctPoints[0] || 'You submitted an attempt, which is a good starting point for reviewing this section.';
 
     const missingOrIncorrect =
-      scoreNormalized >= 0.85
-        ? 'No major concepts missed — your explanation covered the essential points!'
-        : `To make your explanation complete, include: ${missedKeyPointDescriptions.join('; ') || 'the full cause-and-effect relationship described in the model answer'}.`;
+      missingPoints[0] || 'All essential key points were covered!';
+
+    const suggestedAnswer =
+      activity.exemplarAnswer ||
+      activity.expectedAnswer ||
+      (activity.expectedKeyPoints && activity.expectedKeyPoints.join(' ')) ||
+      (activity.gradingRubric?.essentialPoints && activity.gradingRubric.essentialPoints.join('; ')) ||
+      `In ${activity.conceptName}, the mechanism directly governs the resulting state.`;
+
+    const feedback =
+      score100 >= 85
+        ? `Excellent! You clearly understood the core concept.`
+        : score100 >= 65
+        ? `Good understanding! You captured the main concept, though some details were omitted.`
+        : score100 >= 40
+        ? `Partially correct. You understood part of the idea, but key mechanisms were missing.`
+        : `Needs improvement. Your answer did not address the concept taught in this section.`;
 
     return AnswerEvaluator.normalizeEvaluationResult(
       {
+        score: score100,
         scoreNormalized,
+        evaluation: score100 >= 80 ? 'correct' : score100 >= 45 ? 'partially_correct' : 'incorrect',
+        confidence: 0.9,
+        correctPoints,
+        missingPoints,
+        misconceptions,
+        suggestedAnswer,
+        feedback,
         whatWasCorrect,
         missingOrIncorrect,
-        misunderstanding:
-          scoreNormalized < 0.4
-            ? `The core mechanism of ${activity.conceptName} was omitted or misunderstood.`
-            : '',
+        misunderstanding: misconceptions[0] || '',
         rubricScores: {
           factualAccuracy: accuracyScore,
           completeness: completenessScore,

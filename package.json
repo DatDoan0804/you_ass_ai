@@ -4,8 +4,11 @@
   "description": "AI-Powered Interactive YouTube Learning Assistant Browser Extension (Firefox & Chromium MV3)",
   "type": "module",
   "scripts": {
-    "check": "node scripts/validate.js",
-    "package": "zip -r youtube-ai-learning-assistant.zip manifest.json package.json README.md src assets"
+    "test": "node tests/test-suite.js",
+    "check": "node tests/test-suite.js",
+    "server": "node server/subtitle-server.js",
+    "get-sub": "node server/get-sub.js",
+    "package": "zip -r youtube-ai-learning-assistant.zip manifest.json package.json README.md src assets server subtitles_cache"
   },
   "keywords": [
     "youtube",
