@@ -811,7 +811,7 @@ export class AnswerEvaluator {
       activity.expectedAnswer ||
       (activity.expectedKeyPoints && activity.expectedKeyPoints.join(' ')) ||
       (activity.gradingRubric?.essentialPoints && activity.gradingRubric.essentialPoints.join('; ')) ||
-      `In ${activity.conceptName}, the mechanism directly governs the resulting state.`;
+      `In this part of the video, the creator showed what happened and explained why.`;
 
     const feedback =
       score100 >= 85

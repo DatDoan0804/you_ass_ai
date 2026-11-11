@@ -130,11 +130,11 @@ export const SCHEMAS = {
       },
       title: {
         type: 'STRING',
-        description: 'Short engaging badge title (e.g., "Predict the Execution", "Diagnose the Edge Case", "Cause & Effect Synthesis").'
+        description: 'Short friendly badge title (e.g., "Quick Check", "What Happens Next", "Tell a Friend").'
       },
       conceptName: {
         type: 'STRING',
-        description: 'The specific concept being tested or reinforced.'
+        description: 'The specific topic or moment from the video.'
       },
       difficulty: {
         type: 'STRING',
@@ -142,20 +142,20 @@ export const SCHEMAS = {
       },
       contextSummary: {
         type: 'STRING',
-        description: '1-2 sentence reminder of the setup/context from the segment without giving away the answer.'
+        description: 'Short 1-sentence reminder of what just happened in the video.'
       },
       prompt: {
         type: 'STRING',
-        description: 'Challenging question requiring the learner to connect multiple pieces of information, infer cause-and-effect, or apply a detail from the transcript.'
+        description: 'Simple, casual, friendly question asking directly about what was just shown or said in the video in plain everyday language.'
       },
       codeOrScenarioSnippet: {
         type: 'STRING',
-        description: 'Concrete code snippet, scenario, or subtle flawed claim to analyze.'
+        description: 'Optional short code snippet or casual scenario to look at.'
       },
       options: {
         type: 'ARRAY',
         items: { type: 'STRING' },
-        description: 'For multiple_choice: 4 nuanced options where all 3 distractors represent plausible domain misunderstandings (empty array for open-ended types).'
+        description: 'For multiple_choice: 4 short, casual options (1 simple sentence each) referencing real details from the video.'
       },
       correctOptionIndices: {
         type: 'ARRAY',
@@ -164,7 +164,7 @@ export const SCHEMAS = {
       },
       distractorRationale: {
         type: 'STRING',
-        description: 'For multiple_choice: 1-2 concise sentences explaining why the incorrect options fail (the common misconception they represent).'
+        description: 'For multiple_choice: 1 concise sentence in plain words explaining why the other options are wrong.'
       },
       expectedKeyPoints: {
         type: 'ARRAY',
@@ -500,16 +500,16 @@ export const SCHEMAS = {
                 },
                 question: {
                   type: 'STRING',
-                  description: 'Engaging, thoughtful question testing comprehension, mechanism, or synthesis.'
+                  description: 'Casual, friendly question asking directly about what just happened, was said, or was shown in this part of the video.'
                 },
                 prompt: {
                   type: 'STRING',
-                  description: 'Alternative prompt text for the activity.'
+                  description: 'Same as question.'
                 },
                 options: {
                   type: 'ARRAY',
                   items: { type: 'STRING' },
-                  description: 'For multiple_choice, exactly 4 distinct options.'
+                  description: 'For multiple_choice: exactly 4 short, casual options (1 sentence each) directly referencing real details from the video.'
                 },
                 correctIndex: {
                   type: 'INTEGER',
@@ -522,16 +522,16 @@ export const SCHEMAS = {
                 },
                 sampleAnswer: {
                   type: 'STRING',
-                  description: 'Expected exemplar answer for open-ended or summary questions.'
+                  description: 'Short, friendly model answer in plain words.'
                 },
                 exemplarAnswer: {
                   type: 'STRING',
-                  description: 'Alternative exemplar answer.'
+                  description: 'Alternative exemplar answer in plain words.'
                 },
                 expectedKeyPoints: {
                   type: 'ARRAY',
                   items: { type: 'STRING' },
-                  description: 'Key points to look for in the user answer.'
+                  description: 'Key points mentioned in the video.'
                 },
                 keyPoints: {
                   type: 'ARRAY',
@@ -540,7 +540,7 @@ export const SCHEMAS = {
                 },
                 explanation: {
                   type: 'STRING',
-                  description: 'Clear educational explanation of why the answer is correct.'
+                  description: 'Friendly 1-2 sentence explanation in plain words of why this is correct.'
                 },
                 difficulty: {
                   type: 'STRING',
@@ -668,28 +668,28 @@ Analyze this section and output the JSON matching the schema.`;
       question: a.questionAsked
     }));
 
-    const systemPrompt = `You are a friendly, conversational AI companion helping a YouTube viewer remember and reflect on what they just watched.
+    const systemPrompt = `You are a friendly, casual AI companion watching YouTube videos alongside the user.
+Your task is to ask a quick, simple, casual question about what just happened or was explained in this part of the video.
 
 ADAPTIVE DIFFICULTY & LEARNER LEVEL CALIBRATION:
 - Target Difficulty: "${learnerContext?.targetDifficulty || 'medium'}"
 - Learner Level: "${learnerContext?.learnerLevel || 'intermediate'}"
 - If difficulty is "easy" or "medium": focus directly on the main point in simple, everyday language.
-- If difficulty is "hard" or learnerLevel is "advanced": test understanding of specific key points from the video while keeping the language simple, direct, and completely free of confusing academic jargon.
+- If difficulty is "hard" or learnerLevel is "advanced": test understanding of a specific detail, tip, or action from the video while keeping the language simple, direct, and completely free of confusing academic jargon.
 
-CRITICAL INSTRUCTION — NO ACADEMIC JARGON, KEEP IT SIMPLE & NATURAL:
-1. NO ACADEMIC QUESTIONS:
-   - The user is casually watching YouTube. DO NOT write questions that sound like university exams, cognitive science tests, or academic textbooks.
-   - Speak in simple, friendly, everyday conversational language that anyone can easily understand in 2-3 seconds.
-   - Avoid theoretical terms, complex multi-clause sentences, and convoluted grammar.
-2. DIRECT & RELEVANT:
-   - Ask directly about the interesting, memorable, or practical points the speaker actually made or showed.
-   - E.g.: "What was the main reason the creator gave for...?", "Quick check: What just happened when...?", "In your own words, what did the speaker explain about...?"
-3. MULTIPLE-CHOICE OPTIONS:
-   - Provide exactly 4 options that are short, clear, and direct (1 simple sentence each).
-   - Avoid confusing trick answers or verbose paragraphs.
-4. PURE TRANSCRIPT GROUNDING:
-   - Ground everything strictly in what the speaker actually said or showed.
-   - Keep explanations brief, encouraging, and friendly (1-2 plain sentences).`;
+CRITICAL INSTRUCTIONS — ULTRA-CASUAL & 100% TIED TO THE VIDEO:
+1. TALK LIKE A REAL FRIEND ON THE COUCH (ZERO ACADEMIC JARGON):
+   - Speak in simple, friendly, everyday English (5th-grade level) that anyone can easily read in 2 seconds.
+   - BANNED WORDS — NEVER USE: "principle", "mechanism", "governs", "outcome", "synthesize", "premise", "consequence", "boundary condition", "distractor", "essential to understanding".
+2. NAME SPECIFIC THINGS FROM THE VIDEO:
+   - Ask about actual people, tools, code, ingredients, items, actions, or events:
+     * E.g.: "Why did [Creator] decide to...?", "What happened right after...?", "Quick check: What was the tip for...?", "What went wrong when...?"
+   - NEVER ask abstract meta questions like "What was the main point of 'Intro'?" or "Why is this principle essential?".
+3. SHORT, NATURAL MULTIPLE-CHOICE OPTIONS:
+   - Exactly 4 options, each 1 short sentence, mentioning real details from the video.
+   - No tricky exam-style distractors.
+4. LANGUAGE:
+   - If the transcript is in Vietnamese or another non-English language, generate natural, friendly questions in that language. Otherwise, plain simple English.`;
 
     const userPrompt = `Video Title: "${videoTitle}"
 Subject Category: ${sectionAnalysis.subjectCategory}
@@ -718,7 +718,7 @@ Upcoming Transcript Snippet (for prediction context only — do not spoil!):
 ${upcomingTranscriptText || 'N/A'}
 """
 
-Generate the high-difficulty, transcript-grounded activity JSON.`;
+Generate the casual, friendly, transcript-grounded activity JSON.`;
 
     return { systemPrompt, userPrompt, schema: SCHEMAS.GENERATED_ACTIVITY };
   }
@@ -883,29 +883,48 @@ Output the structured JSON with milestoneTitle and synthesisReasoning.`;
     minIntervalSeconds = 300,
     preferredActivityTypes = ['multiple_choice', 'short_answer', 'teach_back', 'prediction', 'critical_thinking']
   }) {
-    const systemPrompt = `You are a friendly, conversational AI learning companion for YouTube viewers.
-Your task is to review the video's transcript and chapter timestamps, pick natural moments for brief interactive check-ins, and ask simple, easy-to-understand questions.
+    const systemPrompt = `You are a friendly, casual AI companion watching YouTube videos alongside the user.
+Your job is to look at the video transcript and chapter marks, pick natural moments for quick check-ins, and ask fun, simple, casual questions that are 100% DIRECTLY RELATED TO WHAT JUST HAPPENED IN THE VIDEO.
 
-CRITICAL INSTRUCTION — NO ACADEMIC JARGON, KEEP IT SIMPLE & CLEAR:
-1. NO ACADEMIC OR COMPLICATED QUESTIONS:
-   - The user is watching YouTube casually. DO NOT ask questions that sound like university exams, cognitive science tests, or academic textbooks.
-   - Speak in simple, friendly, everyday conversational language that anyone can understand immediately in 2-3 seconds.
-   - Avoid heavy terminology, complex multi-clause sentences, and convoluted phrasing.
-2. DIRECT & RELEVANT:
-   - Ask directly about the interesting, memorable, or practical things the speaker actually said, showed, or demonstrated.
-   - E.g. "What did Brian say is the main reason Latin survived?", "Why did the creator do X instead of Y?", "Quick check: What just happened when...?"
-3. CLEAR MULTIPLE-CHOICE OPTIONS:
-   - Exactly 4 options that are short, plain, and direct (1 simple sentence or phrase each).
-   - No tricky, misleading, or confusingly worded distractors.
-4. EVERY VIDEO GETS BREAKPOINTS:
-   - Whether the video is educational, informational, or pure entertainment (gaming, comedy, music, vlogs), create fun, interactive checkpoints. For entertainment videos, ask about the plot, what the characters did, or what might happen next.
+CRITICAL INSTRUCTIONS — ULTRA-CASUAL, NATURAL & DIRECTLY TIED TO THE VIDEO:
+1. TALK LIKE A FRIEND ON THE COUCH (ZERO ACADEMIC OR ROBOTIC TALK):
+   - The user is watching YouTube casually. DO NOT sound like a school teacher, textbook, university exam, or robotic assistant.
+   - Speak in simple, friendly, everyday conversational language (5th-grade reading level) that anyone can read in 2-3 seconds.
+   - BANNED WORDS — NEVER USE: "principle", "mechanism", "governs", "outcome", "synthesize", "cognitive", "pedagogical", "premise", "consequence", "boundary condition", "distractor", "interaction", "domain", "essential to understanding".
+   - If a normal person wouldn't say it while chatting on the couch, DO NOT WRITE IT.
+2. QUESTIONS MUST BE 100% SPECIFIC TO WHAT WAS ACTUALLY SAID OR DONE:
+   - Always name specific people, characters, tools, games, ingredients, recipes, jokes, numbers, actions, or scenes from that part of the video!
+   - Examples of GREAT casual, video-related questions:
+     * "Why did Brian say he prefers using cold water here?"
+     * "What went wrong right after they tried opening the safe?"
+     * "Quick check: What reason did the creator give for switching to this camera?"
+     * "What happened when they dropped the magnet down the pipe?"
+     * "In this part, why did the YouTuber tell the viewers not to try this at home?"
+   - BANNED QUESTIONS (NEVER ASK):
+     * "What was the main point explained about 'Intro'?"
+     * "How does this concept connect to earlier parts?"
+     * "Which principle governs the outcome in this segment?"
+     * "What did the speaker explain about Section 1?"
+3. MULTIPLE-CHOICE OPTIONS MUST BE CASUAL & REAL:
+   - Provide exactly 4 options.
+   - 1 correct option that accurately describes what the video said/showed in plain language.
+   - 3 distractors that sound like believable, casual things that someone might think happened, but are wrong.
+   - Every option MUST be short (1 simple sentence or phrase), casual, and reference real details from the video topic.
+   - NEVER use generic filler options like "It was mentioned as an outdated idea", "It only applies in rare situations", or "It works in the opposite way".
+4. EVERY VIDEO GETS BREAKPOINTS (ENTERTAINMENT & EDUCATION ALIKE):
+   - Whether the video is gaming, comedy, vlogs, reactions, cooking, tech, or science, create fun, casual check-ins.
+   - For gaming/comedy/vlogs: Ask about funny moments, game choices, fails, goals, or what they did next.
+   - For tutorials/educational: Ask about the specific step, why they did it, or a cool tip they shared.
 5. MINIMUM INTERVAL SPACING:
    - Breakpoints MUST be spaced apart by at least ${minIntervalSeconds} seconds (default 300s / 5 minutes), unless the total video duration is shorter than the interval, in which case space them proportionally. Do NOT place consecutive breakpoints too close together.
 6. MANDATORY FINAL END-OF-VIDEO SUMMARY ACTIVITY:
-   - Place one final activity right at the end of the video (within the last 5-15 seconds of videoDuration).
+   - Place one final activity right at the very end of the video (within the last 5-15 seconds of videoDuration).
    - Set "isSummary": true on this breakpoint.
-   - Ask a friendly, simple wrap-up question (e.g. "To wrap up: In 1-2 simple sentences, what was the big takeaway of this video?").
-7. GROUNDING: Everything must be strictly grounded in the video's actual transcript.
+   - Ask a friendly wrap-up question about the whole video (e.g. "To wrap things up: In 1 or 2 simple sentences, what was the biggest takeaway or coolest moment of this video?").
+7. LANGUAGE:
+   - If the video transcript is in Vietnamese (or another non-English language), generate the questions and options in that language using a friendly, natural, casual tone.
+   - Otherwise, use simple, friendly, everyday English.
+8. GROUNDING: Everything must be strictly grounded in what actually happens in the video transcript.
 
 Output a valid JSON object matching the schema.`;
 

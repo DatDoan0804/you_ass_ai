@@ -688,6 +688,18 @@ export class UIManager {
       activity.type === 'spot_the_mistake' ||
       activity.subjectCategory === 'programming';
 
+    const rawClean = ActivityGenerator.cleanConceptName(activity.conceptName || '');
+    const displayConceptTitle = rawClean && !/^(concept check|section \d+|part \d+)$/i.test(rawClean)
+      ? rawClean
+      : (activity.title || (activity.isSummary ? 'End-of-Video Wrap-Up' : 'Quick Check'));
+
+    const hasHelpfulContext = Boolean(
+      activity.contextSummary &&
+      !activity.contextSummary.startsWith('Segment ') &&
+      !activity.contextSummary.includes('Covers ') &&
+      activity.contextSummary.trim() !== ActivityGenerator.sanitizePrompt(activity.prompt)
+    );
+
     wrapper.innerHTML = `
       <div class="yt-learn-card">
         <div class="yt-learn-card-header">
@@ -705,10 +717,10 @@ export class UIManager {
         </div>
 
         <div class="yt-learn-card-body" id="yt-learn-activity-body">
-          <h3 class="yt-learn-concept-title">${this.escapeHtml(ActivityGenerator.cleanConceptName(activity.conceptName || 'Concept Check'))}</h3>
+          <h3 class="yt-learn-concept-title">${this.escapeHtml(displayConceptTitle)}</h3>
 
           ${
-            activity.contextSummary
+            hasHelpfulContext
               ? `<div class="yt-learn-context-box">${this.escapeHtml(activity.contextSummary)}</div>`
               : ''
           }
@@ -724,7 +736,7 @@ export class UIManager {
           <div id="yt-learn-input-mount"></div>
 
           <div id="yt-learn-hint-area" style="display:none;font-size:12.5px;color:#38bdf8;background:rgba(56,189,248,0.1);padding:8px 12px;border-radius:8px;">
-            💡 <strong>Hint:</strong> ${this.escapeHtml(activity.hint || 'Connect the setup at the beginning of this segment with its outcome.')}
+            💡 <strong>Hint:</strong> ${this.escapeHtml(activity.hint || 'Think about what the speaker just said or showed on screen.')}
           </div>
 
           <div id="yt-learn-status-mount"></div>

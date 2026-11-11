@@ -110,7 +110,7 @@ export class BreakpointDetector {
         const sectionText =
           hasSubstantiveChunkText
             ? matchingChunk.text
-            : `In "${conceptTitle}" (${ch.start}s–${ch.end}s), the instructor introduces the core principles, explains how they operate step by step, and demonstrates their practical application.`;
+            : `In this part of the video, the creator explains "${conceptTitle}" and demonstrates what happens step by step.`;
 
         const rotatedType = SEED_ACTIVITY_ROTATION[seedIndex % SEED_ACTIVITY_ROTATION.length];
         seedIndex += 1;
@@ -847,9 +847,23 @@ export class BreakpointDetector {
 
   static extractConceptLabel(text = '', index = 0) {
     const cleaned = String(text || '').replace(/\[.*?\]/g, '').trim();
-    if (!cleaned) return `Section ${index + 1} Concept`;
-    const words = cleaned.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/).filter(Boolean).slice(0, 5);
-    return words.join(' ') || `Section ${index + 1} Concept`;
+    if (!cleaned) return `Section ${index + 1}`;
+    const stopWords = new Set([
+      'hey', 'hi', 'hello', 'guys', 'everyone', 'welcome', 'back', 'today', 'in', 'this',
+      'video', 'we', 'are', 'going', 'to', 'so', 'alright', 'okay', 'now', 'well', 'um',
+      'uh', 'let', 'lets', 'i', 'im', 'you', 'know', 'like', 'just', 'and', 'the', 'a',
+      'an', 'it', 'its', 'thats', 'what', 'is', 'up', 'my', 'name', 'here'
+    ]);
+    const words = cleaned
+      .replace(/[^a-zA-Z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 1 && !stopWords.has(w.toLowerCase()))
+      .slice(0, 4);
+
+    if (words.length >= 2) {
+      return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    }
+    return `Section ${index + 1}`;
   }
 
   /**
@@ -897,12 +911,7 @@ export class BreakpointDetector {
       ...activity,
       id: `act_${videoId}_${bpId}`,
       prompt: BreakpointDetector.sanitizePrompt(activity.prompt),
-      title:
-        source === 'chapter'
-          ? `Chapter Checkpoint (${activity.title})`
-          : source === 'ai-semantic'
-          ? `AI ${activity.title}`
-          : activity.title,
+      title: activity.title || 'Quick Check',
       isAiGenerated: source === 'ai-semantic'
     };
   }

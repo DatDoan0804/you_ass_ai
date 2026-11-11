@@ -317,10 +317,17 @@ export class ActivityGenerator {
   }
 
   static cleanConceptName(name = '') {
-    return String(name || '')
+    let s = String(name || '')
       .replace(/^(chapter|section|part)\s+\d+[:\s-]*/i, '')
       .replace(/[.]+$/, '')
       .trim();
+
+    if (/^\d+$/.test(s) || /^(intro|introduction|outro|conclusion|summary|overview)$/i.test(s)) {
+      if (/^(intro|introduction)$/i.test(s)) return 'Introduction';
+      if (/^(outro|conclusion)$/i.test(s)) return 'Wrap-Up';
+      return '';
+    }
+    return s;
   }
 
   static cleanSentence(s = '') {
@@ -421,7 +428,7 @@ export class ActivityGenerator {
     learnerContext = null
   }) {
     const type = sectionAnalysis.recommendedActivityType || 'multiple_choice';
-    const text = (chunk.text || '').trim();
+    const text = (chunk.text || '').replace(/\[.*?\]/g, '').trim();
     const rawSentences = text
       .split(/(?<=[.?!])\s+/)
       .map((s) => ActivityGenerator.cleanSentence(s))
@@ -434,9 +441,9 @@ export class ActivityGenerator {
     const rawConceptName =
       chunk.chapterTitle ||
       sectionAnalysis.conceptName ||
-      `Section ${chunkIndex + 1} Concept`;
-    const conceptName =
-      ActivityGenerator.cleanConceptName(rawConceptName) || `Section ${chunkIndex + 1} Concept`;
+      '';
+    const cleanConcept = ActivityGenerator.cleanConceptName(rawConceptName);
+    const conceptName = cleanConcept || (validSentences[0] ? validSentences[0].slice(0, 35) : `Section ${chunkIndex + 1}`);
 
     const hasDistinctPair =
       validSentences.length >= 2 &&
@@ -446,16 +453,10 @@ export class ActivityGenerator {
 
     const premiseSentence =
       validSentences[0] ||
-      (text.length > 25 ? ActivityGenerator.cleanSentence(text) : `The instructor explains the core principle of "${conceptName}".`);
-    const mechanismSentence = validSentences[1] || premiseSentence;
+      (text.length > 25 ? ActivityGenerator.cleanSentence(text) : `The creator shows what happens in this part of the video.`);
     const consequenceSentence = hasDistinctPair
       ? validSentences[validSentences.length - 1]
-      : (text.length > 40 ? ActivityGenerator.cleanSentence(text) : `the core principle governs how "${conceptName}" operates in practice.`);
-
-    const terms = ActivityGenerator.extractDomainTerms(text, conceptName);
-    const termA = terms[0] || 'the primary factor';
-    const termB = terms[1] || (terms[0] ? 'the resulting outcome' : 'the core requirement');
-    const termC = terms[2] || 'the overall context';
+      : (text.length > 40 ? ActivityGenerator.cleanSentence(text) : `showing the step-by-step result.`);
 
     const fullExemplar = ActivityGenerator.ensureCompleteExemplar(
       sectionAnalysis.conceptSummary,
@@ -464,7 +465,6 @@ export class ActivityGenerator {
     );
 
     const timeRange = `${Math.floor(chunk.start / 60)}:${String(Math.floor(chunk.start % 60)).padStart(2, '0')} – ${Math.floor(chunk.end / 60)}:${String(Math.floor(chunk.end % 60)).padStart(2, '0')}`;
-    const isProgramming = (sectionAnalysis.subjectCategory || 'general') === 'programming';
 
     let title = 'Quick Check';
     let prompt = '';
@@ -473,10 +473,16 @@ export class ActivityGenerator {
     let correctOptionIndices = [];
     let distractorRationale = '';
 
+    const hasSpecificConcept = Boolean(cleanConcept && cleanConcept !== 'Introduction' && cleanConcept !== 'Wrap-Up');
+
     switch (type) {
       case 'multiple_choice': {
         title = 'Quick Check';
-        prompt = `What was the main point explained about "${conceptName}"?`;
+        if (hasSpecificConcept) {
+          prompt = `What did the creator explain or show about ${cleanConcept}?`;
+        } else {
+          prompt = `What was the main thing explained or shown in this part of the video?`;
+        }
 
         let synthesizedCorrect;
         if (hasDistinctPair) {
@@ -484,14 +490,17 @@ export class ActivityGenerator {
         } else if (text.length > 25) {
           synthesizedCorrect = premiseSentence;
         } else {
-          synthesizedCorrect = `The speaker demonstrates how "${conceptName}" works in everyday situations.`;
+          synthesizedCorrect = `The video demonstrates how this works step by step.`;
         }
 
-        const correctText = synthesizedCorrect.length <= 140 ? synthesizedCorrect : `${synthesizedCorrect.slice(0, 137)}...`;
+        if (synthesizedCorrect.length < 45) {
+          synthesizedCorrect = `The creator shows that ${synthesizedCorrect.charAt(0).toLowerCase() + synthesizedCorrect.slice(1)}`;
+        }
+        const correctText = synthesizedCorrect.length <= 120 ? synthesizedCorrect : `${synthesizedCorrect.slice(0, 117)}...`;
 
-        const distractor1 = `It was mentioned as an outdated idea that is no longer used today.`;
-        const distractor2 = `It only applies in rare situations and has little impact on the topic.`;
-        const distractor3 = `It works in the opposite way from what was described here.`;
+        const distractor1 = `They tried this at first, but showed that it didn't work out as expected.`;
+        const distractor2 = `They suggested skipping this step because it doesn't change the final result.`;
+        const distractor3 = `They warned that doing this produces the opposite of what was demonstrated.`;
 
         const allOptions = [correctText, distractor1, distractor2, distractor3];
         const targetIndex = chunkIndex % 4;
@@ -504,65 +513,89 @@ export class ActivityGenerator {
 
         options = allOptions;
         correctOptionIndices = [targetIndex];
-        distractorRationale = `The correct option directly reflects what was stated in the video. The other options contradict or minimize the speaker's main points.`;
+        distractorRationale = `The correct option directly reflects what was shown in the video. The other options are common mistakes or opposite claims.`;
         break;
       }
 
       case 'spot_the_mistake': {
-        title = 'Spot the Error';
-        codeOrScenarioSnippet = `Viewer Comment:\n"In ${conceptName}, this principle has no real effect and can be safely ignored."`;
-        prompt = `A viewer left the comment above about "${conceptName}". In simple words, why is that incorrect based on the video?`;
+        title = 'Spot the Mistake';
+        codeOrScenarioSnippet = `Viewer comment:\n"You can completely ignore what was shown here, it doesn't actually matter."`;
+        prompt = `A viewer left the comment above. Based on what the video actually showed, why is that wrong?`;
         break;
       }
 
       case 'prediction': {
         title = 'What Happens Next?';
-        prompt = `Based on what the creator just explained in "${conceptName}", what do you expect to happen next?`;
+        prompt = `Based on what the creator just did, what do you think will happen next in the video?`;
         break;
       }
 
       case 'practical_application': {
         title = 'Real-World Example';
-        prompt = `How would you use or notice "${conceptName}" in a real-life situation?`;
+        if (hasSpecificConcept) {
+          prompt = `How could someone actually use what was shown about ${cleanConcept} in real life?`;
+        } else {
+          prompt = `How could someone actually use or notice what was demonstrated here in real life?`;
+        }
         break;
       }
 
       case 'critical_thinking': {
-        title = 'Think It Over';
-        prompt = `Based on what was just shown about "${conceptName}", why is this principle essential to understanding the topic?`;
+        title = 'Think About It';
+        if (hasSpecificConcept) {
+          prompt = `Based on what was just shown about "${cleanConcept}", why is this principle essential or helpful in the video?`;
+        } else {
+          prompt = `Based on what was just shown in this clip, why is this principle essential or helpful to know?`;
+        }
         break;
       }
 
       case 'compare_concepts': {
         title = 'Compare & Contrast';
-        prompt = `How does the speaker compare "${conceptName}" with other ideas in this video?`;
+        if (hasSpecificConcept) {
+          prompt = `How does the creator compare ${cleanConcept} with other options or ideas in this video?`;
+        } else {
+          prompt = `How does the creator compare what was shown here with other ideas in this video?`;
+        }
         break;
       }
 
       case 'connect_concepts': {
-        title = 'Connecting the Dots';
-        prompt = `How does "${conceptName}" connect back to the earlier parts of this video?`;
+        title = 'Connecting Ideas';
+        if (hasSpecificConcept) {
+          prompt = `How does ${cleanConcept} connect back to what the creator did earlier in the video?`;
+        } else {
+          prompt = `How does what just happened here connect back to earlier parts of the video?`;
+        }
         break;
       }
 
       case 'teach_back': {
-        title = 'Explain in Plain Words';
-        prompt = `How would you explain "${conceptName}" in simple words to a friend who hasn't watched this video?`;
+        title = 'Explain to a Friend';
+        if (hasSpecificConcept) {
+          prompt = `If a friend asked what ${cleanConcept} was about, how would you explain it in 1 simple sentence?`;
+        } else {
+          prompt = `How would you explain what just happened in this clip to a friend in 1 simple sentence?`;
+        }
         break;
       }
 
       case 'short_answer':
       default: {
         title = 'Quick Question';
-        prompt = `In 1 or 2 simple sentences, what did the speaker just explain about "${conceptName}"?`;
+        if (hasSpecificConcept) {
+          prompt = `In 1 or 2 simple sentences, what did the creator just show or explain about ${cleanConcept}?`;
+        } else {
+          prompt = `In 1 or 2 simple sentences, what just happened or was explained in this part of the video?`;
+        }
         break;
       }
     }
 
     const cleanPrompt = ActivityGenerator.sanitizePrompt(prompt);
-    const cleanHint = hasDistinctPair
-      ? `Connect what the instructor stated at the start of the segment ("${premiseSentence.slice(0, 65)}...") with the consequence at the end ("${consequenceSentence.slice(0, 65)}...").`
-      : `Focus on why "${conceptName}" is necessary and what happens if its core condition is not satisfied.`;
+    const cleanHint = validSentences[0]
+      ? `Think about what happened in this part: "${validSentences[0].slice(0, 60)}..."`
+      : 'Think about what the speaker just said or demonstrated on screen.';
 
     return {
       id: `act_fallback_${videoId}_${chunk.id}_${chunkIndex}`,
@@ -572,7 +605,7 @@ export class ActivityGenerator {
       title,
       conceptName,
       difficulty: learnerContext?.targetDifficulty || 'medium',
-      contextSummary: `Segment ${timeRange}: Covers ${conceptName}.`,
+      contextSummary: validSentences[0] ? validSentences[0].slice(0, 110) : '',
       prompt: cleanPrompt,
       codeOrScenarioSnippet,
       options,
@@ -587,8 +620,8 @@ export class ActivityGenerator {
         essentialPoints: validSentences.length > 0 ? validSentences.slice(0, 3) : [fullExemplar],
         acceptableAlternatives: [consequenceSentence, fullExemplar],
         commonMisconceptions: [
-          `Misunderstanding the primary requirement of ${conceptName}`,
-          `Assuming the outcome is achieved without satisfying the initial condition`
+          `Assuming what happened in the video had the opposite effect`,
+          `Skipping the main step that was demonstrated`
         ]
       },
       breakpointTime: sectionAnalysis.alignedBreakpointTime || chunk.end,

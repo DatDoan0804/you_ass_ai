@@ -1969,6 +1969,43 @@ This is subtitle line 2.
     assert.strictEqual(savedSettings?.subtitlePosition, null, 'Settings updated to reset position');
   });
 
+  await test('Casual & Video-Related Phrasing: cleans greetings, avoids academic filler in prompts and fallbacks', () => {
+    // 1. extractConceptLabel filters conversational filler
+    const greetingText = 'Hey guys welcome back today we are going to build a redstone machine.';
+    const label = BreakpointDetector.extractConceptLabel(greetingText, 0);
+    assert.strictEqual(label.includes('Hey Guys'), false, 'Does not use greeting filler as concept');
+    assert.strictEqual(label.includes('Build Redstone Machine'), true, 'Extracts the actual action/topic');
+
+    // 2. cleanConceptName strips Intro/Outro/numbers
+    assert.strictEqual(ActivityGenerator.cleanConceptName('Intro'), 'Introduction');
+    assert.strictEqual(ActivityGenerator.cleanConceptName('1'), '');
+    assert.strictEqual(ActivityGenerator.cleanConceptName('Chapter 2: Sourdough'), 'Sourdough');
+
+    // 3. createFallbackActivity produces casual video-related question without robotic filler
+    const chunk = {
+      start: 60,
+      end: 180,
+      chapterTitle: 'Intro',
+      text: 'We mixed the cold water with flour and let the dough ferment for four hours.'
+    };
+    const act = ActivityGenerator.createFallbackActivity({
+      videoId: 'vid-casual',
+      chunk,
+      sectionAnalysis: { recommendedActivityType: 'multiple_choice' },
+      chunkIndex: 0
+    });
+
+    assert.strictEqual(act.prompt.includes('about "Intro"'), false, 'Does not ask about Intro');
+    assert.strictEqual(act.prompt.includes('primary principle governs'), false, 'No academic principle jargon');
+    assert.ok(act.prompt.includes('What was the main thing explained') || act.prompt.includes('What did the creator explain'), 'Casual question wording');
+
+    // Check options are natural and do not contain generic academic filler
+    act.options.forEach((opt) => {
+      assert.strictEqual(opt.includes('outdated idea that is no longer used'), false, 'No generic filler distractor');
+      assert.strictEqual(opt.includes('satisfying the primary condition to achieve the expected result'), false, 'No robotic template option');
+    });
+  });
+
   console.log(`\n========================================`);
   console.log(`Summary: ${passed} passed, ${failed} failed`);
   console.log(`========================================\n`);
