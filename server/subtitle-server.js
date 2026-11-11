@@ -31,8 +31,133 @@ if (!fs.existsSync(CACHE_DIR)) {
 const PORT = parseInt(process.env.PORT || '8765', 10);
 const HOST = '127.0.0.1';
 
+export function normalizeForComparison(str) {
+  return (str || '')
+    .toLowerCase()
+    .replace(/[.,!?:;\"'()\[\]{}–—\-\/\\<>]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function findLongestWordOverlap(suffixStr, prefixStr) {
+  const words1 = suffixStr.split(' ').filter(Boolean);
+  const words2 = prefixStr.split(' ').filter(Boolean);
+  let maxWords = 0;
+  for (let len = Math.min(words1.length, words2.length); len >= 1; len--) {
+    const s1 = words1.slice(words1.length - len).join(' ');
+    const s2 = words2.slice(0, len).join(' ');
+    if (s1 === s2) {
+      maxWords = len;
+      break;
+    }
+  }
+  return maxWords;
+}
+
+export function trimRepeatedPrefix(prevText, currText) {
+  const nPrev = normalizeForComparison(prevText);
+  const nCurr = normalizeForComparison(currText);
+  const overlap = findLongestWordOverlap(nPrev, nCurr);
+  if (overlap >= 2) {
+    const re = /\S+/g;
+    let count = 0;
+    let cutIdx = 0;
+    let m;
+    while ((m = re.exec(currText)) !== null) {
+      count++;
+      if (count === overlap) {
+        cutIdx = re.lastIndex;
+        break;
+      }
+    }
+    if (cutIdx > 0) {
+      let trimmed = currText.slice(cutIdx).replace(/^[.,!?:;\s–—\-]+/, '').trim();
+      if (trimmed.length > 2) {
+        trimmed = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+        return trimmed;
+      }
+    }
+  }
+  return currText;
+}
+
+export function cleanAndDeduplicateCues(rawCues) {
+  if (!Array.isArray(rawCues) || rawCues.length === 0) return [];
+  const sorted = [...rawCues]
+    .filter((c) => c && typeof c.start === 'number' && typeof c.end === 'number' && c.text)
+    .sort((a, b) => a.start - b.start);
+
+  if (sorted.length === 0) return [];
+
+  // Pass 1: Filter flash transition frames (< 0.06s) and merge consecutive identical texts
+  const pass1 = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const cue = { ...sorted[i] };
+    cue.text = String(cue.text).replace(/\s+/g, ' ').trim();
+    if (!cue.text) continue;
+    if (cue.end - cue.start < 0.06 && sorted.length > 1) continue;
+
+    if (pass1.length > 0) {
+      const prev = pass1[pass1.length - 1];
+      if (prev.text.toLowerCase() === cue.text.toLowerCase()) {
+        prev.end = Math.max(prev.end, cue.end);
+        continue;
+      }
+    }
+    pass1.push(cue);
+  }
+
+  // Pass 2: Remove rolling bridge cues (e.g. suffix of prev + prefix of next)
+  const pass2 = [];
+  let i = 0;
+  while (i < pass1.length) {
+    if (i > 0 && i < pass1.length - 1) {
+      const prev = pass2[pass2.length - 1];
+      const curr = pass1[i];
+      const next = pass1[i + 1];
+
+      const nPrev = normalizeForComparison(prev.text);
+      const nCurr = normalizeForComparison(curr.text);
+      const nNext = normalizeForComparison(next.text);
+
+      const overlapPrev = findLongestWordOverlap(nPrev, nCurr);
+      const overlapNext = findLongestWordOverlap(nCurr, nNext);
+      const currWords = nCurr.split(' ').filter(Boolean).length;
+
+      // Bridge cue detected: current cue is completely covered by prev suffix & next prefix
+      if (currWords >= 3 && overlapPrev >= 2 && overlapNext >= 2 && (overlapPrev + overlapNext >= currWords - 1)) {
+        prev.end = Math.max(prev.end, curr.end);
+        i++;
+        continue;
+      }
+    }
+    pass2.push({ ...pass1[i] });
+    i++;
+  }
+
+  // Pass 3: Trim repeated prefix from consecutive cues and fix overlapping timestamps
+  const cleaned = [];
+  for (let j = 0; j < pass2.length; j++) {
+    const current = { ...pass2[j] };
+    if (cleaned.length > 0) {
+      const prev = cleaned[cleaned.length - 1];
+      current.text = trimRepeatedPrefix(prev.text, current.text);
+    }
+    const next = pass2[j + 1];
+    if (next && current.end > next.start) {
+      current.end = Math.max(current.start + 0.3, Number(next.start.toFixed(2)));
+    }
+    if (current.text) {
+      cleaned.push(current);
+    }
+  }
+
+  return cleaned;
+}
+
 /**
  * Parses WebVTT or SubRip (SRT) format into normalized cue objects.
+ * Handles rolling 2-line captions and eliminates duplicate sentences.
  * @param {string} content - Raw VTT or SRT string
  * @returns {Array<{start: number, end: number, text: string}>}
  */
@@ -42,7 +167,8 @@ export function parseVttOrSrt(content) {
   const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   let currentStart = null;
   let currentEnd = null;
-  let currentText = [];
+  let currentLines = [];
+  let lastLineText = '';
 
   const timeRegex = /(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})/;
 
@@ -66,19 +192,37 @@ export function parseVttOrSrt(content) {
       .trim();
   };
 
+  const flushCue = (start, end, rawLines) => {
+    if (start === null || !rawLines || rawLines.length === 0) return;
+    const duration = end - start;
+    if (duration <= 0.05) return;
+
+    let textLines = [...rawLines];
+    // In YouTube 2-line rolling captions, line 0 is the rolled-up line already shown in previous cue
+    if (
+      textLines.length > 1 &&
+      lastLineText &&
+      (textLines[0].toLowerCase() === lastLineText.toLowerCase() ||
+        lastLineText.toLowerCase().endsWith(textLines[0].toLowerCase()))
+    ) {
+      textLines.shift();
+    }
+
+    const text = cleanText(textLines.join(' '));
+    if (text) {
+      cues.push({ start, end, text });
+      lastLineText = cleanText(rawLines[rawLines.length - 1]);
+    }
+  };
+
   for (const rawLine of lines) {
     const line = rawLine.trim();
     const match = line.match(timeRegex);
     if (match) {
-      if (currentStart !== null && currentText.length > 0) {
-        const text = cleanText(currentText.join(' '));
-        if (text) {
-          cues.push({ start: currentStart, end: currentEnd, text });
-        }
-        currentText = [];
-      }
+      flushCue(currentStart, currentEnd, currentLines);
       currentStart = parseSec(match[1], match[2], match[3], match[4]);
       currentEnd = parseSec(match[5], match[6], match[7], match[8]);
+      currentLines = [];
     } else if (
       currentStart !== null &&
       line &&
@@ -88,18 +232,13 @@ export function parseVttOrSrt(content) {
       !line.startsWith('Kind:') &&
       !line.startsWith('Language:')
     ) {
-      currentText.push(line);
+      const cleaned = cleanText(line);
+      if (cleaned) currentLines.push(cleaned);
     }
   }
 
-  if (currentStart !== null && currentText.length > 0) {
-    const text = cleanText(currentText.join(' '));
-    if (text) {
-      cues.push({ start: currentStart, end: currentEnd, text });
-    }
-  }
-
-  return cues;
+  flushCue(currentStart, currentEnd, currentLines);
+  return cleanAndDeduplicateCues(cues);
 }
 
 /**
@@ -470,12 +609,15 @@ export async function downloadSubtitlesWithYtDlp(videoId, lang = 'en') {
 export function loadSubtitleFile(filePath) {
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
+    let cues = [];
     if (filePath.endsWith('.json')) {
       const data = JSON.parse(raw);
-      if (Array.isArray(data.cues)) return data.cues;
-      if (Array.isArray(data)) return data;
+      if (Array.isArray(data.cues)) cues = data.cues;
+      else if (Array.isArray(data)) cues = data;
+    } else {
+      cues = parseVttOrSrt(raw);
     }
-    return parseVttOrSrt(raw);
+    return cleanAndDeduplicateCues(cues);
   } catch (err) {
     console.error(`[LocalServer] Failed to read ${filePath}: ${err.message}`);
     return [];

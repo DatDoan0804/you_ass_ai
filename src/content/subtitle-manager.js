@@ -836,7 +836,8 @@ export class SubtitleManager {
     const lines = vttString.split('\n');
     let currentStart = null;
     let currentEnd = null;
-    let currentText = [];
+    let currentLines = [];
+    let lastLineText = '';
 
     const timeRegex = /(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})/;
 
@@ -848,40 +849,59 @@ export class SubtitleManager {
       return h * 3600 + m * 60 + s + millis / 1000;
     };
 
+    const flushCue = (start, end, rawLines) => {
+      if (start === null || !rawLines || rawLines.length === 0) return;
+      const duration = end - start;
+      if (duration <= 0.05) return; // Skip 0.01s flash transition frames
+
+      let textLines = [...rawLines];
+      // In YouTube 2-line rolling captions, line 0 is the rolled-up line already shown in previous cue
+      if (
+        textLines.length > 1 &&
+        lastLineText &&
+        (textLines[0].toLowerCase() === lastLineText.toLowerCase() ||
+          lastLineText.toLowerCase().endsWith(textLines[0].toLowerCase()))
+      ) {
+        textLines.shift(); // Drop the duplicated previous line!
+      }
+
+      const text = SubtitleManager.cleanSubtitleText(textLines.join(' '));
+      if (text) {
+        cues.push({
+          start: Number(start.toFixed(2)),
+          end: Number(end.toFixed(2)),
+          text
+        });
+        lastLineText = SubtitleManager.cleanSubtitleText(rawLines[rawLines.length - 1]);
+      }
+    };
+
     for (const rawLine of lines) {
       const line = rawLine.trim();
       const match = line.match(timeRegex);
       if (match) {
-        if (currentStart !== null && currentText.length > 0) {
-          const text = SubtitleManager.cleanSubtitleText(currentText.join(' '));
-          if (text) {
-            cues.push({
-              start: Number(currentStart.toFixed(2)),
-              end: Number(currentEnd.toFixed(2)),
-              text
-            });
-          }
-          currentText = [];
-        }
+        flushCue(currentStart, currentEnd, currentLines);
         currentStart = parseSec(match[1], match[2], match[3], match[4]);
         currentEnd = parseSec(match[5], match[6], match[7], match[8]);
-      } else if (currentStart !== null && line && !/^\d+$/.test(line) && !line.startsWith('NOTE') && !line.startsWith('WEBVTT')) {
-        currentText.push(line);
+        currentLines = [];
+      } else if (
+        currentStart !== null &&
+        line &&
+        !/^\d+$/.test(line) &&
+        !line.startsWith('NOTE') &&
+        !line.startsWith('WEBVTT') &&
+        !line.startsWith('Kind:') &&
+        !line.startsWith('Language:')
+      ) {
+        const cleaned = SubtitleManager.cleanSubtitleText(line);
+        if (cleaned) {
+          currentLines.push(cleaned);
+        }
       }
     }
 
-    if (currentStart !== null && currentText.length > 0) {
-      const text = SubtitleManager.cleanSubtitleText(currentText.join(' '));
-      if (text) {
-        cues.push({
-          start: Number(currentStart.toFixed(2)),
-          end: Number(currentEnd.toFixed(2)),
-          text
-        });
-      }
-    }
-
-    return cues;
+    flushCue(currentStart, currentEnd, currentLines);
+    return SubtitleManager.cleanAndMergeCues(cues);
   }
 
   static parseJson3Captions(jsonString) {
@@ -907,7 +927,7 @@ export class SubtitleManager {
           text
         });
       }
-      return cues;
+      return SubtitleManager.cleanAndMergeCues(cues);
     } catch {
       return [];
     }
@@ -956,7 +976,7 @@ export class SubtitleManager {
           });
         }
       }
-      return cues;
+      return SubtitleManager.cleanAndMergeCues(cues);
     }
 
     // Regex fallback for environments without DOMParser (e.g. Node tests / background workers)
@@ -979,7 +999,7 @@ export class SubtitleManager {
         });
       }
     }
-    if (cues.length > 0) return cues;
+    if (cues.length > 0) return SubtitleManager.cleanAndMergeCues(cues);
 
     const textRegex = /<text\b([^>]*?)>([\s\S]*?)<\/text>/gi;
     while ((match = textRegex.exec(xmlString)) !== null) {
@@ -998,7 +1018,57 @@ export class SubtitleManager {
         });
       }
     }
-    return cues;
+    return SubtitleManager.cleanAndMergeCues(cues);
+  }
+
+  static normalizeForComparison(str) {
+    return (str || '')
+      .toLowerCase()
+      .replace(/[.,!?:;\"'()\[\]{}–—\-\/\\<>]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  static findLongestWordOverlap(suffixStr, prefixStr) {
+    const words1 = suffixStr.split(' ').filter(Boolean);
+    const words2 = prefixStr.split(' ').filter(Boolean);
+    let maxWords = 0;
+    for (let len = Math.min(words1.length, words2.length); len >= 1; len--) {
+      const s1 = words1.slice(words1.length - len).join(' ');
+      const s2 = words2.slice(0, len).join(' ');
+      if (s1 === s2) {
+        maxWords = len;
+        break;
+      }
+    }
+    return maxWords;
+  }
+
+  static trimRepeatedPrefix(prevText, currText) {
+    const nPrev = SubtitleManager.normalizeForComparison(prevText);
+    const nCurr = SubtitleManager.normalizeForComparison(currText);
+    const overlap = SubtitleManager.findLongestWordOverlap(nPrev, nCurr);
+    if (overlap >= 2) {
+      const re = /\S+/g;
+      let count = 0;
+      let cutIdx = 0;
+      let m;
+      while ((m = re.exec(currText)) !== null) {
+        count++;
+        if (count === overlap) {
+          cutIdx = re.lastIndex;
+          break;
+        }
+      }
+      if (cutIdx > 0) {
+        let trimmed = currText.slice(cutIdx).replace(/^[.,!?:;\s–—\-]+/, '').trim();
+        if (trimmed.length > 2) {
+          trimmed = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+          return trimmed;
+        }
+      }
+    }
+    return currText;
   }
 
   static cleanAndMergeCues(rawCues) {
@@ -1007,10 +1077,64 @@ export class SubtitleManager {
       .filter((c) => c && typeof c.start === 'number' && typeof c.end === 'number' && c.text)
       .sort((a, b) => a.start - b.start);
 
-    const cleaned = [];
+    if (sorted.length === 0) return [];
+
+    // Pass 1: Filter flash transition frames (< 0.06s) and merge consecutive identical texts
+    const pass1 = [];
     for (let i = 0; i < sorted.length; i++) {
-      const current = { ...sorted[i] };
-      const next = sorted[i + 1];
+      const cue = { ...sorted[i] };
+      cue.text = String(cue.text).replace(/\s+/g, ' ').trim();
+      if (!cue.text) continue;
+      if (cue.end - cue.start < 0.06 && sorted.length > 1) continue;
+
+      if (pass1.length > 0) {
+        const prev = pass1[pass1.length - 1];
+        if (prev.text.toLowerCase() === cue.text.toLowerCase()) {
+          prev.end = Math.max(prev.end, cue.end);
+          continue;
+        }
+      }
+      pass1.push(cue);
+    }
+
+    // Pass 2: Remove rolling bridge cues (e.g. "pizza is really good. And it is a nice day"
+    // when previous cue has "i love pizza, pizza is really good." and next has "And it is a nice day to have a pie of pizza")
+    const pass2 = [];
+    let i = 0;
+    while (i < pass1.length) {
+      if (i > 0 && i < pass1.length - 1) {
+        const prev = pass2[pass2.length - 1];
+        const curr = pass1[i];
+        const next = pass1[i + 1];
+
+        const nPrev = SubtitleManager.normalizeForComparison(prev.text);
+        const nCurr = SubtitleManager.normalizeForComparison(curr.text);
+        const nNext = SubtitleManager.normalizeForComparison(next.text);
+
+        const overlapPrev = SubtitleManager.findLongestWordOverlap(nPrev, nCurr);
+        const overlapNext = SubtitleManager.findLongestWordOverlap(nCurr, nNext);
+        const currWords = nCurr.split(' ').filter(Boolean).length;
+
+        // Bridge cue detected: current cue is completely covered by prev suffix & next prefix
+        if (currWords >= 3 && overlapPrev >= 2 && overlapNext >= 2 && (overlapPrev + overlapNext >= currWords - 1)) {
+          prev.end = Math.max(prev.end, curr.end);
+          i++;
+          continue;
+        }
+      }
+      pass2.push({ ...pass1[i] });
+      i++;
+    }
+
+    // Pass 3: Trim repeated prefix from consecutive cues and normalize overlapping timestamps
+    const cleaned = [];
+    for (let j = 0; j < pass2.length; j++) {
+      const current = { ...pass2[j] };
+      if (cleaned.length > 0) {
+        const prev = cleaned[cleaned.length - 1];
+        current.text = SubtitleManager.trimRepeatedPrefix(prev.text, current.text);
+      }
+      const next = pass2[j + 1];
       if (next && current.end > next.start) {
         current.end = Math.max(current.start + 0.3, Number(next.start.toFixed(2)));
       }
@@ -1018,6 +1142,7 @@ export class SubtitleManager {
         cleaned.push(current);
       }
     }
+
     return cleaned;
   }
 

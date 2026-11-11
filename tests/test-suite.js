@@ -2221,6 +2221,64 @@ This is subtitle line 2.
     assert.ok(typeof failedUntil === 'number' && failedUntil > Date.now() + 50000, 'Negative cache set for 60s');
   });
 
+  console.log('\n20. Rolling Subtitle Deduplication & Independent Sentence Display');
+
+  await test('cleanAndMergeCues removes middle rolling transition sentences and displays sentences independently', () => {
+    // User request case: 3 cues where middle cue is an overlapping bridge
+    const rawCues = [
+      { start: 0.0, end: 4.0, text: 'i love pizza, pizza is really good.' },
+      { start: 4.0, end: 8.0, text: 'pizza is really good. And it is a nice day' },
+      { start: 8.0, end: 12.0, text: 'And it is a nice day to have a pie of pizza' }
+    ];
+
+    const cleaned = SubtitleManager.cleanAndMergeCues(rawCues);
+    assert.strictEqual(cleaned.length, 2, 'Middle bridge sentence was removed');
+    assert.strictEqual(cleaned[0].text, 'i love pizza, pizza is really good.');
+    assert.strictEqual(cleaned[1].text, 'And it is a nice day to have a pie of pizza');
+    assert.strictEqual(cleaned[0].end, 8.0, 'First cue timestamp extended cleanly across transition');
+    assert.strictEqual(cleaned[1].start, 8.0, 'Second cue starts cleanly without gap');
+  });
+
+  await test('parseVttOrSrt deduplicates YouTube 2-line rolling captions and skips flash frames', () => {
+    const rollingVtt = `WEBVTT
+Kind: captions
+Language: en
+
+00:00:00.080 --> 00:00:02.230
+welcome back to rm transit one of my
+
+00:00:02.230 --> 00:00:02.240
+welcome back to rm transit one of my
+
+00:00:02.240 --> 00:00:03.830
+welcome back to rm transit one of my
+favorite cities i've ever visited is
+
+00:00:03.830 --> 00:00:03.840
+favorite cities i've ever visited is
+
+00:00:03.840 --> 00:00:05.830
+favorite cities i've ever visited is
+berlin and more than any other city i've
+`;
+    const cues = parseVttOrSrt(rollingVtt);
+    assert.strictEqual(cues.length, 3, 'Extracted 3 independent sequential cues');
+    assert.strictEqual(cues[0].text, 'welcome back to rm transit one of my');
+    assert.strictEqual(cues[1].text, "favorite cities i've ever visited is");
+    assert.strictEqual(cues[2].text, "berlin and more than any other city i've");
+  });
+
+  await test('cleanAndMergeCues trims repeated prefix between consecutive subtitle sentences', () => {
+    const raw = [
+      { start: 0.0, end: 3.0, text: 'Learning languages takes daily practice.' },
+      { start: 3.0, end: 6.0, text: 'takes daily practice. Consistency is the key.' }
+    ];
+    const cleaned = SubtitleManager.cleanAndMergeCues(raw);
+    assert.strictEqual(cleaned.length, 2);
+    assert.strictEqual(cleaned[0].text, 'Learning languages takes daily practice.');
+    assert.strictEqual(cleaned[1].text, 'Consistency is the key.', 'Repeated prefix trimmed and capitalized');
+  });
+
   console.log(`\n========================================`);
   console.log(`Summary: ${passed} passed, ${failed} failed`);
   console.log(`========================================\n`);
