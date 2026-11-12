@@ -79,6 +79,8 @@ export class VideoController {
       if (url.pathname === '/watch') {
         return url.searchParams.get('v');
       }
+      const pathVideoId = url.pathname.match(/^\/(?:shorts|live|embed)\/([a-zA-Z0-9_-]{11})(?:\/|$)/);
+      if (pathVideoId) return pathVideoId[1];
       if (window.__YT_LEARN_SIMULATED_VIDEO_ID__) {
         return window.__YT_LEARN_SIMULATED_VIDEO_ID__;
       }
@@ -236,6 +238,13 @@ export class VideoController {
       }
 
       const metadata = await this.requestBridgeMetadata();
+      if (!metadata) {
+        this.log(`[Captions] Page bridge returned no metadata on attempt ${attempt + 1}.`);
+      } else if (metadata.playerMetadataStale) {
+        this.log(`[Captions] YouTube player metadata is still for a previous video; waiting for ${expectedVideoId}.`);
+      } else if (metadata.error) {
+        this.log(`[Captions] Page bridge metadata extraction failed: ${metadata.error}`);
+      }
       if (metadata && metadata.videoId === expectedVideoId) {
         latestMetadata = metadata;
       }
@@ -353,7 +362,8 @@ export class VideoController {
         })),
         chapters: []
       };
-    } catch {
+    } catch (err) {
+      this.log(`[Captions] DOM metadata extraction failed: ${err.message}`);
       return null;
     }
   }

@@ -430,46 +430,246 @@ export function cuesToVtt(cues) {
  * @param {string[]} extraArgs
  * @returns {Promise<{code: number, stdout: string, stderr: string}>}
  */
-export function runYtDlp(videoId, extraArgs = []) {
+function runYtDlpCommand(args, timeoutMs = 45000) {
   return new Promise((resolve) => {
-    const outputTemplate = path.join(CACHE_DIR, `${videoId}.%(ext)s`);
-    const args = [
-      '--skip-download',
-      '--sub-format', 'vtt/srt/best',
-      '-o', outputTemplate,
-      ...extraArgs,
-      `https://www.youtube.com/watch?v=${videoId}`
-    ];
-
-    if (fs.existsSync('/usr/bin/node')) {
-      args.unshift('--js-runtimes', 'node:/usr/bin/node');
-    }
-
-    console.log(`[LocalServer] Executing in terminal: yt-dlp ${args.join(' ')}`);
-
     const child = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGKILL');
+      resolve({ code: -1, stdout, stderr: `${stderr}\nyt-dlp timed out after ${timeoutMs}ms` });
+    }, timeoutMs);
 
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
-
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       resolve({ code, stdout, stderr });
     });
-
     child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       console.error(`[LocalServer] Failed to spawn yt-dlp: ${err.message}`);
-      resolve({ code: -1, stdout: '', stderr: err.message });
+      resolve({ code: -1, stdout, stderr: `${stderr}\n${err.message}`.trim() });
     });
   });
 }
 
+function withNodeRuntime(args) {
+  if (fs.existsSync('/usr/bin/node')) args.unshift('--js-runtimes', 'node:/usr/bin/node');
+  return args;
+}
+
+function sanitizeYtDlpDiagnostic(value = '') {
+  return String(value || '')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/((?:token|signature|authorization|cookie|api[_-]?key|pot)=)[^&\s,}"']+/gi, '$1[redacted]')
+    .replace(/("(?:token|signature|authorization|cookie|api[_-]?key|pot)"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
+    .trim()
+    .slice(-1000);
+}
+
+export function runYtDlp(videoId, extraArgs = [], outputTemplateOverride = '') {
+  const outputTemplate = outputTemplateOverride || path.join(CACHE_DIR, `${videoId}.%(ext)s`);
+  const args = withNodeRuntime([
+    '--skip-download',
+    '--sub-format', 'vtt/srt/best',
+    '-o', outputTemplate,
+    ...extraArgs,
+    `https://www.youtube.com/watch?v=${videoId}`
+  ]);
+  console.log(`[LocalServer] Executing yt-dlp subtitle download for video ${videoId}.`);
+  return runYtDlpCommand(args);
+}
+
+export function parseYtDlpSubtitleList(output = '') {
+  const tracks = [];
+  let kind = '';
+  for (const rawLine of String(output).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const section = line.match(/Available\s+(automatic captions|subtitles)\s+for\b/i);
+    if (section) {
+      kind = section[1].toLowerCase().startsWith('automatic') ? 'asr' : 'standard';
+      continue;
+    }
+    if (!kind || !line || /^Language\s+Name\s+Formats/i.test(line) || /^\[/.test(line)) continue;
+    const row = line.match(/^([\w.-]+)\s+(.+)$/u);
+    if (!row || !/(?:vtt|ttml|srv\d|json3|srt|ass|lrc)/i.test(row[2])) continue;
+    if (row[1].toLowerCase() === 'live_chat') continue;
+    const formatMatch = row[2].match(/\s+(?:vtt|ttml|srv\d|json3|srt|ass|lrc)(?:[,\s]|$)/i);
+    const name = formatMatch ? row[2].slice(0, formatMatch.index).trim() : row[2].trim();
+    tracks.push({ languageCode: row[1], name: name || row[1], kind });
+  }
+  return tracks;
+}
+
+export function rankSourceSubtitleTracks(tracks = [], preferredLang = 'auto', videoLang = '') {
+  tracks = Array.isArray(tracks) ? tracks.filter((track) => track?.languageCode?.toLowerCase() !== 'live_chat') : [];
+  if (tracks.length === 0) return [];
+  const prefix = (lang) => String(lang || '').toLowerCase().split('-')[0];
+  const matchLanguage = (target) => {
+    if (!target || target === 'auto') return [];
+    const targetLower = String(target).toLowerCase();
+    const targetPrefix = prefix(target);
+    return tracks.filter((track) => String(track.languageCode || '').toLowerCase() === targetLower)
+      .concat(tracks.filter((track) => {
+        const code = String(track.languageCode || '').toLowerCase();
+        return code !== targetLower && (code.startsWith(`${targetPrefix}-`) || code === targetPrefix);
+      }));
+  };
+  const preferred = matchLanguage(preferredLang);
+  const native = matchLanguage(videoLang);
+  const manual = tracks.filter((track) => track.kind !== 'asr');
+  const automatic = tracks.filter((track) => track.kind === 'asr');
+  const ordered = [
+    ...preferred.filter((track) => track.kind !== 'asr'),
+    ...preferred.filter((track) => track.kind === 'asr'),
+    ...native.filter((track) => track.kind !== 'asr'),
+    ...native.filter((track) => track.kind === 'asr'),
+    ...manual,
+    ...automatic
+  ];
+  return ordered.filter((track, index, all) => all.findIndex((item) => item.languageCode === track.languageCode && item.kind === track.kind) === index);
+}
+
+export function selectSourceSubtitleTrack(tracks = [], preferredLang = 'auto', videoLang = '') {
+  return rankSourceSubtitleTracks(tracks, preferredLang, videoLang)[0] || null;
+}
+
+function findSourceSubtitleFile(videoId, languageCode = '', kind = '') {
+  if (!fs.existsSync(CACHE_DIR)) return null;
+  const prefix = `${videoId}.source.`.toLowerCase();
+  const language = String(languageCode || '').toLowerCase();
+  const baseLanguage = language.split('-')[0];
+  const files = fs.readdirSync(CACHE_DIR).filter((file) => {
+    const lower = file.toLowerCase();
+    if (!lower.startsWith(prefix) || !/\.(?:vtt|srt|json)$/i.test(lower)) return false;
+    const match = lower.match(/\.source\.(standard|asr)\.([\w.-]+)\.(?:vtt|srt|json)$/i);
+    if (!match) return false;
+    const kindMatches = !kind || match[1] === kind.toLowerCase();
+    const languageMatches = !language || match[2] === language || match[2].split('-')[0] === baseLanguage;
+    return kindMatches && languageMatches;
+  });
+  if (!files.length) return null;
+  const filePath = path.join(CACHE_DIR, files[0]);
+  const match = files[0].toLowerCase().match(/\.source\.(standard|asr)\.([\w.-]+)\.(?:vtt|srt|json)$/i);
+  return fs.statSync(filePath).size > 0
+    ? { filePath, kind: match[1], languageCode: match[2] }
+    : null;
+}
+
+const inFlightOriginalDownloads = new Map();
+const negativeSubCache = new Map();
+
+export async function downloadOriginalSubtitlesWithYtDlp(videoId, preferredLang = 'auto') {
+  const safeVideoId = String(videoId || '');
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(safeVideoId)) {
+    throw new Error('A valid 11-character YouTube video ID is required for transcript retrieval.');
+  }
+  const preferred = String(preferredLang || 'auto').trim();
+  const cacheKey = `${safeVideoId}:${preferred.toLowerCase()}`;
+  const negativeKey = `original:${cacheKey}`;
+  if (inFlightOriginalDownloads.has(cacheKey)) return inFlightOriginalDownloads.get(cacheKey);
+
+  const job = (async () => {
+    const negativeUntil = negativeSubCache.get(negativeKey);
+    if (negativeUntil && Date.now() < negativeUntil) return { unavailable: true, tracks: [], cached: true };
+
+    const cachedSource = preferred === 'auto'
+      ? findSourceSubtitleFile(safeVideoId, '', 'standard') || findSourceSubtitleFile(safeVideoId, '', 'asr')
+      : findSourceSubtitleFile(safeVideoId, preferred, 'standard') || findSourceSubtitleFile(safeVideoId, preferred, 'asr');
+    if (cachedSource) {
+      const cues = loadSubtitleFile(cachedSource.filePath);
+      if (cues.length) {
+        return {
+          cues,
+          trackInfo: {
+            languageCode: cachedSource.languageCode,
+            name: cachedSource.languageCode,
+            kind: cachedSource.kind,
+            source: 'yt-dlp-cache'
+          },
+          availableTracks: []
+        };
+      }
+    }
+
+    const listArgs = withNodeRuntime([
+      '--list-subs', '--skip-download', '--no-warnings', '--no-playlist',
+      `https://www.youtube.com/watch?v=${safeVideoId}`
+    ]);
+    const listed = await runYtDlpCommand(listArgs);
+    const listedOutput = `${listed.stdout}\n${listed.stderr}`;
+    const tracks = parseYtDlpSubtitleList(listedOutput);
+    console.info(`[LocalServer] yt-dlp discovered ${tracks.length} caption track(s) for ${safeVideoId}${tracks.length ? `: ${tracks.map((track) => `${track.languageCode}:${track.kind === 'asr' ? 'automatic' : 'manual'}`).join(', ')}` : ''}.`);
+    if (!tracks.length) {
+      const diagnostics = sanitizeYtDlpDiagnostic(listed.stderr || listed.stdout || 'yt-dlp found no subtitle tracks.');
+      if (listed.code !== 0 && !/no subtitles|there are no subtitles/i.test(diagnostics)) {
+        const error = new Error(`yt-dlp subtitle discovery failed (exit ${listed.code}): ${diagnostics}`);
+        error.code = 'CAPTION_METADATA_FAILED';
+        throw error;
+      }
+      negativeSubCache.set(negativeKey, Date.now() + 45000);
+      return { unavailable: true, tracks: [] };
+    }
+
+    const candidates = rankSourceSubtitleTracks(tracks, preferred);
+    if (!candidates.length) return { unavailable: true, tracks };
+    let lastFailure = null;
+    for (const selected of candidates.slice(0, 3)) {
+      console.info(`[LocalServer] Retrieving ${selected.kind === 'asr' ? 'automatic' : 'manual'} ${selected.languageCode} source track for ${safeVideoId}.`);
+      const outputTemplate = path.join(CACHE_DIR, `${safeVideoId}.source.${selected.kind}.%(language)s.%(ext)s`);
+      const writeFlag = selected.kind === 'asr' ? '--write-auto-subs' : '--write-subs';
+      const downloaded = await runYtDlp(safeVideoId, [
+        writeFlag,
+        '--sub-langs', selected.languageCode
+      ], outputTemplate);
+      const sourceFile = findSourceSubtitleFile(safeVideoId, selected.languageCode, selected.kind);
+      if (!sourceFile) {
+        const diagnostics = sanitizeYtDlpDiagnostic(downloaded.stderr || downloaded.stdout || 'yt-dlp did not produce a subtitle file.');
+        lastFailure = new Error(`yt-dlp could not retrieve the ${selected.kind === 'asr' ? 'automatic' : 'manual'} ${selected.languageCode} track${downloaded.code !== 0 ? ` (exit ${downloaded.code})` : ''}: ${diagnostics}`);
+        lastFailure.code = 'CAPTION_CONTENT_FAILED';
+        continue;
+      }
+      const cues = loadSubtitleFile(sourceFile.filePath);
+      if (!cues.length) {
+        lastFailure = new Error(`yt-dlp downloaded ${path.basename(sourceFile.filePath)}, but it contained no parseable cues.`);
+        lastFailure.code = 'CAPTION_PARSE_FAILED';
+        continue;
+      }
+      console.info(`[LocalServer] Parsed ${cues.length} cue(s) from the ${selected.languageCode} source track for ${safeVideoId}.`);
+      return {
+        cues,
+        trackInfo: {
+          languageCode: selected.languageCode,
+          name: selected.name,
+          kind: selected.kind,
+          source: 'yt-dlp'
+        },
+        availableTracks: tracks
+      };
+    }
+    throw lastFailure || Object.assign(new Error('No subtitle track could be retrieved.'), { code: 'CAPTION_CONTENT_FAILED' });
+  })();
+
+  inFlightOriginalDownloads.set(cacheKey, job);
+  try {
+    const result = await job;
+    if (!result?.unavailable) negativeSubCache.delete(negativeKey);
+    return result;
+  } finally {
+    inFlightOriginalDownloads.delete(cacheKey);
+  }
+}
+
 /** @type {Map<string, Promise<{filePath: string, matchedLang: string}|null>>} */
 const inFlightDownloads = new Map();
-
-/** @type {Map<string, number>} cacheKey -> expiresAt timestamp */
-const negativeSubCache = new Map();
 
 /**
  * Invokes yt-dlp in terminal to download subtitles for a video.
@@ -654,6 +854,40 @@ const server = http.createServer(async (req, res) => {
       })
     );
     return;
+  }
+
+  // Source-language transcript fallback. Unlike /subtitles, this route never translates
+  // another language to satisfy the requested language; it returns a real YouTube track.
+  if (pathname === '/original-transcript' && req.method === 'GET') {
+    const videoId = reqUrl.searchParams.get('videoId') || '';
+    const lang = reqUrl.searchParams.get('lang') || 'auto';
+    if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: 'INVALID_VIDEO_ID', error: 'A valid YouTube video ID is required.' }));
+      return;
+    }
+    if (!/^[a-zA-Z0-9_-]{2,15}$/.test(lang)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: 'INVALID_LANGUAGE', error: 'A valid language code or auto is required.' }));
+      return;
+    }
+
+    try {
+      const result = await downloadOriginalSubtitlesWithYtDlp(videoId, lang);
+      if (result?.unavailable) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: 'NO_CAPTIONS', error: 'yt-dlp found no subtitle tracks for this video.' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, source: 'yt-dlp', ...result }));
+      return;
+    } catch (err) {
+      console.warn(`[LocalServer] Original transcript retrieval failed for ${videoId}: ${err.message}`);
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: err.code || 'CAPTION_RETRIEVAL_FAILED', error: err.message }));
+      return;
+    }
   }
 
   // Route 2: Get subtitles for videoId and lang

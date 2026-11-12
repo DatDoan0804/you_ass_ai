@@ -14,6 +14,15 @@
 
 import { db } from '../storage/database.js';
 
+function sanitizeCaptionDiagnostic(value = '') {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/("(?:token|signature|authorization|cookie|api[_-]?key|pot)"\s*:\s*")[^"]*(")/gi, '$1[redacted]$2')
+    .replace(/((?:token|signature|authorization|cookie|api[_-]?key|pot)=)[^&\s,}"']+/gi, '$1[redacted]')
+    .slice(0, 180);
+}
+
 export class SubtitleManager {
   // Static state for rate-limiting and circuit breaker across all instances
   static cooldownUntil = 0;
@@ -758,6 +767,8 @@ export class SubtitleManager {
         this.lastFetchStatus = { state: 'extracting', message: '' };
         let rawContent = '';
         let targetUrl = baseUrl;
+        let responseContentType = '';
+        let responseSource = '';
 
         // Auto-translation timedtext must not include fmt=json3 (YouTube requires XML/srv3 for tlang)
         if (isTranslated) {
@@ -775,8 +786,18 @@ export class SubtitleManager {
         }
 
         if (bridgeResponse) {
+          responseContentType = bridgeResponse.contentType || '';
+          responseSource = 'page';
           if (bridgeResponse.status === 429 || bridgeResponse.status === 403) {
-            this.lastFetchStatus = { state: 'temporary-failure', status: bridgeResponse.status, message: `Caption request returned HTTP ${bridgeResponse.status}.` };
+            const preview = sanitizeCaptionDiagnostic(bridgeResponse.data);
+            this.lastFetchStatus = {
+              state: 'temporary-failure',
+              status: bridgeResponse.status,
+              category: 'youtube-rejected',
+              contentType: responseContentType,
+              responsePreview: preview,
+              message: `Caption request returned HTTP ${bridgeResponse.status}${responseContentType ? ` (${responseContentType})` : ''}${preview ? `: ${preview}` : ''}.`
+            };
             this.log(`[Captions] Page request returned HTTP ${bridgeResponse.status}; trying the background fetch path.`);
           } else if (bridgeResponse.status === 404) {
             this.lastFetchStatus = { state: 'temporary-failure', status: 404, message: 'Page request returned HTTP 404; trying the background fetch path.' };
@@ -793,24 +814,45 @@ export class SubtitleManager {
           try {
             const bgRes = await this.sendBackgroundRequest('FETCH_CAPTION_TRACK', { url: targetUrl });
             if (bgRes) {
+              responseContentType = bgRes.contentType || responseContentType;
+              responseSource = 'background';
               if (bgRes.status === 429 || bgRes.status === 403 || String(bgRes.error).includes('429')) {
                 SubtitleManager.cooldownUntil = Date.now() + 60000;
-                this.lastFetchStatus = { state: 'temporary-failure', status: bgRes.status, message: bgRes.error || `Caption request returned HTTP ${bgRes.status}.` };
+                const preview = sanitizeCaptionDiagnostic(bgRes.responsePreview || bgRes.error);
+                this.lastFetchStatus = {
+                  state: 'temporary-failure',
+                  status: bgRes.status,
+                  category: 'youtube-rejected',
+                  contentType: responseContentType,
+                  responsePreview: preview,
+                  message: preview || bgRes.error || `Caption request returned HTTP ${bgRes.status}.`
+                };
                 this.log(`[SubtitleManager] YouTube rate limit reached in background. Cooldown activated for 60s.`);
                 return [];
               }
               if (bgRes.status === 404) {
                 this.failedUrls.add(baseUrl);
-                this.lastFetchStatus = { state: 'unavailable', status: 404, message: 'Caption track returned HTTP 404.' };
+                const preview = sanitizeCaptionDiagnostic(bgRes.responsePreview || bgRes.error);
+                this.lastFetchStatus = {
+                  state: 'unavailable',
+                  status: 404,
+                  contentType: responseContentType,
+                  responsePreview: preview,
+                  message: `Caption track returned HTTP 404${responseContentType ? ` (${responseContentType})` : ''}${preview ? `: ${preview}` : '.'}`
+                };
                 return [];
               }
               if (bgRes.ok && bgRes.data) {
                 rawContent = String(bgRes.data).trim();
               } else if (!bgRes.ok) {
+                const preview = sanitizeCaptionDiagnostic(bgRes.responsePreview || bgRes.error);
                 this.lastFetchStatus = {
                   state: bgRes.status >= 500 || !bgRes.status ? 'temporary-failure' : 'extraction-failed',
                   status: bgRes.status,
-                  message: bgRes.error || `Caption request failed${bgRes.status ? ` with HTTP ${bgRes.status}` : ''}.`
+                  category: 'http-failure',
+                  contentType: responseContentType,
+                  responsePreview: preview,
+                  message: preview || bgRes.error || `Caption request failed${bgRes.status ? ` with HTTP ${bgRes.status}` : ''}.`
                 };
               }
             }
@@ -823,33 +865,41 @@ export class SubtitleManager {
           if (this.lastFetchStatus.state === 'extracting') {
             this.lastFetchStatus = { state: 'extraction-failed', message: 'Caption track returned no readable content.' };
           }
-          this.log(`[Captions] Transcript retrieval failed: ${this.lastFetchStatus.state}${this.lastFetchStatus.status ? ` (HTTP ${this.lastFetchStatus.status})` : ''}.`);
+          this.log(`[Captions] Transcript retrieval failed: source=${responseSource || 'unknown'}, state=${this.lastFetchStatus.state}${this.lastFetchStatus.status ? ` (HTTP ${this.lastFetchStatus.status})` : ''}, contentType=${responseContentType || 'unspecified'}, detail=${sanitizeCaptionDiagnostic(this.lastFetchStatus.message) || 'none'}.`);
           return [];
         }
 
+        const normalizedContent = rawContent.replace(/^\uFEFF/, '').replace(/^\)\]\}'\s*/, '').trimStart();
         let parsed = [];
-        if (rawContent.startsWith('{')) {
-          parsed = SubtitleManager.parseJson3Captions(rawContent);
-        } else if (rawContent.includes('<transcript') || rawContent.includes('<timedtext') || rawContent.includes('<p ') || rawContent.includes('<text ')) {
-          parsed = SubtitleManager.parseXmlCaptions(rawContent);
-        } else if (rawContent.includes('WEBVTT') || rawContent.includes('-->')) {
-          parsed = SubtitleManager.parseVttCaptions(rawContent);
+        if (responseContentType.includes('json') || normalizedContent.startsWith('{')) {
+          parsed = SubtitleManager.parseJson3Captions(normalizedContent);
+        } else if (normalizedContent.includes('WEBVTT') || normalizedContent.includes('-->')) {
+          parsed = SubtitleManager.parseVttCaptions(normalizedContent);
+        } else if (normalizedContent.includes('<transcript') || normalizedContent.includes('<timedtext') || normalizedContent.includes('<p ') || normalizedContent.includes('<text ')) {
+          parsed = SubtitleManager.parseXmlCaptions(normalizedContent);
         } else {
-          parsed = SubtitleManager.parseXmlCaptions(rawContent);
+          parsed = SubtitleManager.parseXmlCaptions(normalizedContent);
         }
 
         if (parsed.length > 0) {
           this.trackCache.set(baseUrl, parsed);
-          this.lastFetchStatus = { state: 'available', cueCount: parsed.length, format: rawContent.trimStart()[0] === '{' ? 'json3' : rawContent.includes('-->') ? 'vtt' : 'xml', message: '' };
-          this.log(`[Captions] Transcript extracted successfully: ${parsed.length} cue(s), format=${this.lastFetchStatus.format}.`);
+          this.lastFetchStatus = { state: 'available', source: responseSource, cueCount: parsed.length, format: responseContentType.includes('json') || normalizedContent.startsWith('{') ? 'json3' : normalizedContent.includes('-->') ? 'vtt' : 'xml', contentType: responseContentType, message: '' };
+          this.log(`[Captions] Transcript extracted successfully: ${parsed.length} cue(s), format=${this.lastFetchStatus.format}, contentType=${responseContentType || 'unspecified'}, source=${responseSource || 'unknown'}.`);
           return parsed;
         }
 
-        this.lastFetchStatus = { state: 'extraction-failed', message: 'Caption response was received but could not be parsed into cues.' };
-        this.log('[Captions] Transcript response could not be parsed into cues.');
+        const preview = sanitizeCaptionDiagnostic(normalizedContent);
+        this.lastFetchStatus = {
+          state: 'parsing-failed',
+          contentType: responseContentType,
+          responseCharacters: rawContent.length,
+          responsePreview: preview,
+          message: `Received ${rawContent.length} characters${responseContentType ? ` (${responseContentType})` : ''}, but parsed no caption cues${preview ? `: ${preview}` : ''}.`
+        };
+        this.log(`[Captions] Transcript parsing failed: source=${responseSource || 'unknown'}, contentType=${responseContentType || 'unspecified'}, responseCharacters=${rawContent.length}, preview=${preview || '(empty)'}.`);
         return [];
       } catch (err) {
-        this.lastFetchStatus = { state: 'extraction-failed', message: err.message };
+        this.lastFetchStatus = { state: 'parsing-failed', message: err.message, contentType: responseContentType, source: responseSource };
         this.log(`[Captions] Transcript extraction threw: ${err.message}`);
         throw err;
       } finally {

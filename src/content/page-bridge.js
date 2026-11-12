@@ -181,6 +181,7 @@
 
       return {
         videoId,
+        playerMetadataStale: Boolean(routeVideoId && playerVideoId && routeVideoId !== playerVideoId),
         title,
         shortDescription,
         author: playerMatchesRoute ? videoDetails.author || '' : '',
@@ -406,6 +407,7 @@
             requestId,
             ok: res.ok,
             status: res.status,
+            contentType: res.headers.get('content-type') || '',
             data
           },
           '*'

@@ -27,6 +27,23 @@ const memoryCache = new Map();
 /** @type {Map<number, {videoId: string, sessionEpoch: number}>} tabId -> active session state */
 const activeTabSessions = new Map();
 
+async function captionHttpFailure(res) {
+  const responseBody = await res.text().catch(() => '');
+  const responsePreview = responseBody
+    .replace(/\s+/g, ' ')
+    .replace(/https?:\/\/\S+/g, '[url]')
+    .replace(/("(?:token|signature|authorization|cookie|api[_-]?key|pot)"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
+    .replace(/((?:token|signature|authorization|cookie|api[_-]?key|pot)=)[^&\s,}"']+/gi, '$1[redacted]')
+    .slice(0, 240);
+  return {
+    ok: false,
+    status: res.status,
+    contentType: res.headers.get('content-type') || '',
+    responsePreview,
+    error: `Caption fetch HTTP ${res.status}${responsePreview ? `: ${responsePreview}` : ''}`
+  };
+}
+
 const runtimeApi = typeof browser !== 'undefined' && browser.runtime ? browser.runtime : chrome.runtime;
 
 runtimeApi.onMessage.addListener((message, sender, sendResponse) => {
@@ -85,24 +102,49 @@ async function handleMessage(message, tabId) {
       if (!url || !/^https?:\/\/([a-z0-9-]+\.)?(youtube(-nocookie)?\.com\/api\/timedtext|googlevideo\.com\/)/i.test(url)) {
         return { ok: false, status: 400, error: 'Invalid caption track URL.' };
       }
-      try {
-        const res = await fetch(url, { credentials: 'include' });
-        if (!res.ok) {
-          return { ok: false, status: res.status, error: `Caption fetch HTTP ${res.status}` };
-        }
-        const text = await res.text();
-        return { ok: true, status: res.status, data: text };
-      } catch (err) {
+      let lastFailure = null;
+      for (const credentials of ['include', 'omit']) {
         try {
-          const res = await fetch(url);
+          const res = await fetch(url, { credentials });
           if (!res.ok) {
-            return { ok: false, status: res.status, error: `Caption fetch HTTP ${res.status}` };
+            lastFailure = await captionHttpFailure(res);
+            if (res.status === 401 || res.status === 403) continue;
+            return lastFailure;
           }
           const text = await res.text();
-          return { ok: true, status: res.status, data: text };
-        } catch (fetchErr) {
-          return { ok: false, status: 0, error: fetchErr.message };
+          return { ok: true, status: res.status, contentType: res.headers.get('content-type') || '', data: text };
+        } catch (err) {
+          lastFailure = { ok: false, status: 0, error: err.message };
         }
+      }
+      return lastFailure || { ok: false, status: 0, error: 'Caption fetch failed with both credential modes.' };
+    }
+
+    case 'FETCH_LOCAL_TRANSCRIPT': {
+      const { videoId, lang = 'auto', port = 8765 } = payload || {};
+      if (!videoId) return { ok: false, code: 'MISSING_VIDEO_ID', error: 'Missing videoId' };
+      const url = `http://127.0.0.1:${port}/original-transcript?videoId=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        const data = await res.json().catch(() => ({}));
+        return {
+          ok: res.ok && data.ok !== false,
+          status: res.status,
+          code: data.code,
+          error: data.error,
+          data: res.ok ? data : undefined
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          isServerOffline: err.name !== 'AbortError',
+          code: err.name === 'AbortError' ? 'LOCAL_TRANSCRIPT_TIMEOUT' : 'LOCAL_SERVER_OFFLINE',
+          error: err.name === 'AbortError' ? 'Local transcript retrieval timed out.' : `Local subtitle server unavailable: ${err.message}`
+        };
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
