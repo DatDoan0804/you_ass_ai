@@ -1743,13 +1743,14 @@ export class UIManager {
       const complete = cleanWords.length > 0 && prep.position >= prep.queue.length;
       const currentIndex = complete ? -1 : prep.queue[prep.position];
       const item = currentIndex >= 0 ? cleanWords[currentIndex] : null;
-      const preparing = this.vocabularyState === 'preparing';
+      const preparing = this.vocabularyState === 'preparing' || this.vocabularyState === 'unknown';
       let body = '';
 
       if (!item && !complete) {
         body = preparing
-          ? `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">⏳</div><h4>Finding useful words in the captions</h4><p>This can take a moment. Only words and examples found in the captions will be shown.</p></div>`
+          ? `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">⏳</div><h4>${this.vocabularyState === 'unknown' ? 'Checking caption availability' : 'Finding useful words in the captions'}</h4><p>${this.escapeHtml(this.vocabularyMessage || 'This can take a moment. Only words and examples found in the captions will be shown.')}</p></div>`
           : `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">${this.vocabularyState === 'unavailable' ? '💬' : '📖'}</div><h4>${this.vocabularyState === 'unavailable' ? 'Captions aren’t available' : this.vocabularyState === 'error' ? 'Couldn’t prepare the word cards' : 'No word cards yet'}</h4><p>${this.escapeHtml(this.vocabularyMessage || (this.vocabularyState === 'unavailable' ? 'No transcript was available, so we didn’t guess. Add words yourself or continue to the video.' : 'Add words you want to learn. Include a translation so you can test yourself before watching.'))}</p>
+            ${(this.vocabularyState === 'error' || this.vocabularyState === 'unavailable') ? '<button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-vocab-retry" type="button">Check captions again</button>' : ''}
             <form id="yt-learn-vocab-add-form" class="yt-learn-vocab-add-form">
               <input name="word" required maxlength="100" placeholder="Word or phrase" aria-label="Word or phrase" />
               <input name="translation" required maxlength="240" placeholder="Translation" aria-label="Translation" />
@@ -1812,6 +1813,12 @@ export class UIManager {
       </div>`;
 
       wrapper.querySelector('#yt-learn-vocab-close')?.addEventListener('click', () => this.closeOverlay());
+      wrapper.querySelector('#yt-learn-vocab-retry')?.addEventListener('click', () => {
+        if (typeof this.callbacks.onRetryMetadataCheck === 'function') {
+          this.setVocabularyStatus('preparing', 'Checking YouTube for caption tracks and trying the transcript again.');
+          this.callbacks.onRetryMetadataCheck();
+        }
+      });
       wrapper.querySelector('#yt-learn-vocab-continue')?.addEventListener('click', () => {
         if (this.vocabularyPrepGate && typeof this.callbacks.onContinueVocabulary === 'function') this.callbacks.onContinueVocabulary();
         else this.closeOverlay();

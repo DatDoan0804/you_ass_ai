@@ -12,8 +12,6 @@
   const BRIDGE_SOURCE = 'YT_AI_LEARNING_BRIDGE';
   const REQUEST_EVENT = 'YT_AI_LEARNING_REQUEST_METADATA';
 
-  let activeTimedtextBaseUrl = '';
-
   function findActiveTimedtextFromPerformance() {
     if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') {
       return '';
@@ -22,7 +20,7 @@
       const entries = performance.getEntriesByType('resource');
       for (let i = entries.length - 1; i >= 0; i--) {
         const name = entries[i]?.name || '';
-        if (name && (name.includes('/api/timedtext') || name.includes('/videoplayback?')) && !name.includes('tlang=')) {
+        if (name && name.includes('/api/timedtext') && !name.includes('tlang=')) {
           return name;
         }
       }
@@ -53,18 +51,25 @@
       }
 
       const videoDetails = playerResponse?.videoDetails || {};
-      let captionTracks =
-        playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks ||
-        playerResponse?.captions?.playerCaptionsRenderer?.captionTracks ||
-        [];
+      const routeVideoId = new URLSearchParams(window.location.search).get('v') ||
+        window.location.pathname.match(/^\/(?:shorts|live)\/([^/?]+)/)?.[1] || '';
+      const playerVideoId = videoDetails.videoId || '';
+      const playerMatchesRoute = !routeVideoId || !playerVideoId || routeVideoId === playerVideoId;
+      let captionRenderer =
+        playerMatchesRoute
+          ? playerResponse?.captions?.playerCaptionsTracklistRenderer ||
+            playerResponse?.captions?.playerCaptionsRenderer || null
+          : null;
+      let captionTracks = captionRenderer?.captionTracks || [];
 
-      let translationLanguages =
-        playerResponse?.captions?.playerCaptionsTracklistRenderer?.translationLanguages ||
-        playerResponse?.captions?.playerCaptionsRenderer?.translationLanguages ||
-        [];
+      let translationLanguages = playerMatchesRoute
+        ? playerResponse?.captions?.playerCaptionsTracklistRenderer?.translationLanguages ||
+          playerResponse?.captions?.playerCaptionsRenderer?.translationLanguages ||
+          []
+        : [];
 
       // Fallback 1: Query YouTube Player API options directly
-      if (captionTracks.length === 0 && playerEl && typeof playerEl.getOption === 'function') {
+      if (playerMatchesRoute && captionTracks.length === 0 && playerEl && typeof playerEl.getOption === 'function') {
         try {
           const optTracks = playerEl.getOption('captions', 'tracklist');
           if (Array.isArray(optTracks) && optTracks.length > 0) {
@@ -73,7 +78,7 @@
         } catch {}
       }
 
-      if (translationLanguages.length === 0 && playerEl && typeof playerEl.getOption === 'function') {
+      if (playerMatchesRoute && translationLanguages.length === 0 && playerEl && typeof playerEl.getOption === 'function') {
         try {
           const optLangs = playerEl.getOption('captions', 'translationLanguages');
           if (Array.isArray(optLangs) && optLangs.length > 0) {
@@ -83,14 +88,19 @@
       }
 
       // Fallback 2: Check window.ytInitialPlayerResponse if not checked yet
-      if (captionTracks.length === 0 && window.ytInitialPlayerResponse?.captions) {
+      const initialPlayerVideoId = window.ytInitialPlayerResponse?.videoDetails?.videoId || '';
+      const initialPlayerMatchesRoute = !routeVideoId || !initialPlayerVideoId || routeVideoId === initialPlayerVideoId;
+      if (playerMatchesRoute && initialPlayerMatchesRoute && captionTracks.length === 0 && window.ytInitialPlayerResponse?.captions) {
+        captionRenderer = captionRenderer ||
+          window.ytInitialPlayerResponse.captions?.playerCaptionsTracklistRenderer ||
+          window.ytInitialPlayerResponse.captions?.playerCaptionsRenderer || null;
         captionTracks =
           window.ytInitialPlayerResponse.captions?.playerCaptionsTracklistRenderer?.captionTracks ||
           window.ytInitialPlayerResponse.captions?.playerCaptionsRenderer?.captionTracks ||
           [];
       }
 
-      if (translationLanguages.length === 0 && window.ytInitialPlayerResponse?.captions) {
+      if (playerMatchesRoute && initialPlayerMatchesRoute && translationLanguages.length === 0 && window.ytInitialPlayerResponse?.captions) {
         translationLanguages =
           window.ytInitialPlayerResponse.captions?.playerCaptionsTracklistRenderer?.translationLanguages ||
           window.ytInitialPlayerResponse.captions?.playerCaptionsRenderer?.translationLanguages ||
@@ -98,61 +108,91 @@
       }
 
       const activePerfTimedtext = findActiveTimedtextFromPerformance();
-      const detectedActiveBaseUrl = activeTimedtextBaseUrl || activePerfTimedtext;
+      let detectedActiveBaseUrl = activePerfTimedtext;
+      if (detectedActiveBaseUrl && routeVideoId) {
+        try {
+          const activeUrl = new URL(detectedActiveBaseUrl);
+          const activeVideoId = activeUrl.searchParams.get('v') || activeUrl.searchParams.get('video_id');
+          if (!activeVideoId || activeVideoId !== routeVideoId) detectedActiveBaseUrl = '';
+        } catch {
+          detectedActiveBaseUrl = '';
+        }
+      }
 
       const title =
-        videoDetails.title ||
+        (playerMatchesRoute && videoDetails.title) ||
         document.querySelector('h1.ytd-watch-metadata yt-formatted-string')?.textContent?.trim() ||
         document.title.replace(/ - YouTube$/, '');
 
       const shortDescription =
-        videoDetails.shortDescription ||
-        document.querySelector('#description-inline-expander')?.textContent?.trim() ||
-        '';
+        !playerMatchesRoute
+          ? ''
+          : videoDetails.shortDescription ||
+            document.querySelector('#description-inline-expander')?.textContent?.trim() ||
+            '';
 
       const domDuration =
         videoEl && Number.isFinite(videoEl.duration) && videoEl.duration > 0
           ? Math.round(videoEl.duration)
           : 0;
-      const lengthSeconds = Number(videoDetails.lengthSeconds || domDuration || 0);
+      const lengthSeconds = Number((playerMatchesRoute ? videoDetails.lengthSeconds : 0) || domDuration || 0);
 
-      const videoId =
-        videoDetails.videoId || new URLSearchParams(window.location.search).get('v') || '';
+      const videoId = routeVideoId || playerVideoId;
 
       // 1. Parse chapters from description timestamps
-      let chapters = parseChaptersFromDescription(shortDescription, lengthSeconds);
+      let chapters = playerMatchesRoute ? parseChaptersFromDescription(shortDescription, lengthSeconds) : [];
 
       // 2. Parse native chapters from window.ytInitialData (macroMarkers / engagementPanels)
-      if (chapters.length === 0 && window.ytInitialData) {
+      if (playerMatchesRoute && chapters.length === 0 && window.ytInitialData) {
         chapters = extractChaptersFromInitialData(window.ytInitialData, lengthSeconds);
       }
 
       // 3. Fallback: Parse chapters from YouTube DOM elements
-      if (chapters.length === 0) {
+      if (playerMatchesRoute && chapters.length === 0) {
         chapters = extractChaptersFromDOM(lengthSeconds);
       }
 
       // 4. Test harness fallback
-      if (chapters.length === 0 && Array.isArray(window.__YT_LEARN_TEST_CHAPTERS__)) {
+      if (playerMatchesRoute && chapters.length === 0 && Array.isArray(window.__YT_LEARN_TEST_CHAPTERS__)) {
         chapters = window.__YT_LEARN_TEST_CHAPTERS__;
+      }
+
+      const normalizedCaptionTracks = captionTracks
+        .filter((track) => Boolean(track.baseUrl))
+        .map((t) => ({
+          baseUrl: t.baseUrl,
+          languageCode: t.languageCode,
+          name: t.name?.simpleText || t.name?.runs?.[0]?.text || t.languageName || t.displayName || t.languageCode,
+          kind: t.kind || 'standard',
+          isTranslatable: t.isTranslatable !== false
+        }));
+      if (normalizedCaptionTracks.length === 0 && detectedActiveBaseUrl) {
+        try {
+          const activeUrl = new URL(detectedActiveBaseUrl);
+          normalizedCaptionTracks.push({
+            baseUrl: detectedActiveBaseUrl,
+            languageCode: activeUrl.searchParams.get('lang') || 'und',
+            name: activeUrl.searchParams.get('lang') || 'Currently active captions',
+            kind: activeUrl.searchParams.get('kind') || 'standard',
+            isTranslatable: true
+          });
+        } catch {}
       }
 
       return {
         videoId,
         title,
         shortDescription,
-        author: videoDetails.author || '',
+        author: playerMatchesRoute ? videoDetails.author || '' : '',
         lengthSeconds,
-        activeTimedtextBaseUrl: detectedActiveBaseUrl,
-        captionTracks: captionTracks
-          .filter((t) => Boolean(t.baseUrl || detectedActiveBaseUrl))
-          .map((t) => ({
-            baseUrl: t.baseUrl || detectedActiveBaseUrl || '',
-            languageCode: t.languageCode,
-            name: t.name?.simpleText || t.name?.runs?.[0]?.text || t.languageName || t.displayName || t.languageCode,
-            kind: t.kind || 'standard',
-            isTranslatable: t.isTranslatable !== false
-          })),
+        captionAvailability: normalizedCaptionTracks.length > 0
+          ? 'available'
+          : !playerMatchesRoute
+            ? 'unknown'
+            : captionRenderer
+              ? 'unavailable'
+              : 'unknown',
+        captionTracks: normalizedCaptionTracks,
         translationLanguages: translationLanguages.map((tl) => ({
           languageCode: tl.languageCode,
           name: tl.languageName?.simpleText || tl.languageName?.runs?.[0]?.text || tl.displayName || tl.languageCode
@@ -164,6 +204,7 @@
         error: err.message,
         videoId: new URLSearchParams(window.location.search).get('v') || '',
         captionTracks: [],
+        captionAvailability: 'unknown',
         chapters: []
       };
     }

@@ -105,6 +105,7 @@ export class VideoController {
 
     this.currentVideoId = newVideoId;
     this.sessionEpoch += 1;
+    this.log(`[Captions] Detected YouTube video ID ${newVideoId} (epoch ${this.sessionEpoch}).`);
     this.lastProcessedBucket = -1;
     const capturedEpoch = this.sessionEpoch;
 
@@ -228,34 +229,41 @@ export class VideoController {
   }
 
   async fetchPlayerMetadataWithRetry(expectedVideoId, expectedEpoch) {
-    for (let attempt = 0; attempt < 4; attempt++) {
+    let latestMetadata = null;
+    for (let attempt = 0; attempt < 8; attempt++) {
       if (this.currentVideoId !== expectedVideoId || this.sessionEpoch !== expectedEpoch) {
-        return { videoId: expectedVideoId, captionTracks: [], chapters: [] };
+        return { videoId: expectedVideoId, captionTracks: [], chapters: [], captionAvailability: 'unknown' };
       }
 
       const metadata = await this.requestBridgeMetadata();
-      if (
-        metadata &&
-        metadata.videoId === expectedVideoId &&
-        (metadata.captionTracks?.length > 0 || (metadata.chapters?.length > 0 && attempt >= 1) || attempt >= 3)
-      ) {
+      if (metadata && metadata.videoId === expectedVideoId) {
+        latestMetadata = metadata;
+      }
+      if (metadata?.videoId === expectedVideoId && metadata.captionTracks?.length > 0) {
+        this.log(`[Captions] Track discovery succeeded on attempt ${attempt + 1}: ${metadata.captionTracks.length} tracks (${metadata.captionTracks.map((track) => `${track.languageCode || 'und'}:${track.kind === 'asr' ? 'auto' : 'manual'}`).join(', ')}).`);
         return metadata;
       }
 
       // Check DOM fallback if bridge metadata is missing caption tracks
       const domMeta = this.extractMetadataFromDOM(expectedVideoId);
-      if (domMeta && (domMeta.captionTracks?.length > 0 || domMeta.chapters?.length > 0)) {
+      if (domMeta?.captionTracks?.length > 0) {
+        this.log(`[Captions] DOM fallback discovered ${domMeta.captionTracks.length} tracks.`);
         return domMeta;
       }
 
-      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      if (domMeta?.videoId === expectedVideoId && (!latestMetadata || !latestMetadata.captionTracks?.length)) {
+        latestMetadata = { ...latestMetadata, ...domMeta };
+      }
+      await new Promise((r) => setTimeout(r, Math.min(1200, 250 + attempt * 200)));
     }
 
     // Final DOM fallback before defaulting to empty metadata
     const finalDomMeta = this.extractMetadataFromDOM(expectedVideoId);
-    if (finalDomMeta) return finalDomMeta;
+    if (finalDomMeta?.captionTracks?.length > 0) return finalDomMeta;
 
-    return {
+    if (finalDomMeta?.videoId === expectedVideoId) latestMetadata = { ...latestMetadata, ...finalDomMeta };
+
+    const result = latestMetadata || {
       videoId: expectedVideoId,
       title: typeof document !== 'undefined' ? document.title.replace(/ - YouTube$/, '') : expectedVideoId,
       shortDescription: '',
@@ -264,8 +272,12 @@ export class VideoController {
           ? Math.round(this.videoElement.duration)
           : 0,
       captionTracks: [],
-      chapters: []
+      chapters: [],
+      captionAvailability: 'unknown'
     };
+    if (!result.captionAvailability) result.captionAvailability = result.captionTracks?.length ? 'available' : 'unknown';
+    this.log(`[Captions] Discovery finished for ${expectedVideoId}: status=${result.captionAvailability}, tracks=${result.captionTracks?.length || 0}.`);
+    return result;
   }
 
   extractMetadataFromDOM(videoId) {
@@ -291,10 +303,16 @@ export class VideoController {
       if (!playerResponse) return null;
 
       const videoDetails = playerResponse?.videoDetails || {};
+      if (videoDetails.videoId && videoDetails.videoId !== videoId) {
+        this.log(`[Captions] Ignoring stale player metadata for ${videoDetails.videoId}; current video is ${videoId}.`);
+        return null;
+      }
       const captionTracks =
         playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks ||
         playerResponse?.captions?.playerCaptionsRenderer?.captionTracks ||
         [];
+      const captionRenderer = playerResponse?.captions?.playerCaptionsTracklistRenderer ||
+        playerResponse?.captions?.playerCaptionsRenderer || null;
       const translationLanguages =
         playerResponse?.captions?.playerCaptionsTracklistRenderer?.translationLanguages ||
         playerResponse?.captions?.playerCaptionsRenderer?.translationLanguages ||
@@ -317,8 +335,13 @@ export class VideoController {
         shortDescription,
         author: videoDetails.author || '',
         lengthSeconds,
-        captionTracks: captionTracks.map((t) => ({
-          baseUrl: t.baseUrl || '',
+        captionAvailability: captionTracks.some((track) => Boolean(track.baseUrl))
+          ? 'available'
+          : captionRenderer
+            ? 'unavailable'
+            : 'unknown',
+        captionTracks: captionTracks.filter((track) => Boolean(track.baseUrl)).map((t) => ({
+          baseUrl: t.baseUrl,
           languageCode: t.languageCode,
           name: t.name?.simpleText || t.name?.runs?.[0]?.text || t.languageCode,
           kind: t.kind || 'standard',

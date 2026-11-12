@@ -55,6 +55,7 @@ export class SubtitleManager {
     this.failedLanguages = new Map();
     this.inFlightRequests = new Map();
     this.localServerOfflineUntil = 0;
+    this.lastFetchStatus = { state: 'unknown', message: '' };
   }
 
   async loadSubtitlesForVideo(metadata, preferredLang = 'auto', preferredSecondaryLang = 'en', options = {}) {
@@ -68,6 +69,7 @@ export class SubtitleManager {
     } = metadata;
     this.currentVideoId = videoId;
     this.availableTracks = captionTracks || [];
+    this.log(`[Captions] ${videoId}: ${this.availableTracks.length} available track(s)${this.availableTracks.length ? ` (${this.availableTracks.map((track) => `${track.languageCode || 'und'}:${track.kind === 'asr' ? 'auto' : 'manual'}`).join(', ')})` : ''}.`);
     this.primaryCues = [];
     this.secondaryCues = [];
     this.hasSecondarySubtitles = false;
@@ -710,23 +712,30 @@ export class SubtitleManager {
 
   async fetchAndParseTrack(rawUrl) {
     const baseUrl = SubtitleManager.normalizeTimedtextUrl(rawUrl);
-    if (!baseUrl) return [];
+    if (!baseUrl) {
+      this.lastFetchStatus = { state: 'unknown', message: 'No caption track URL was provided.' };
+      return [];
+    }
 
     // 1. Circuit breaker: if server previously blocked / rate-limited (HTTP 429/403), stop immediately!
     if (Date.now() < SubtitleManager.cooldownUntil) {
       const remainingSec = Math.ceil((SubtitleManager.cooldownUntil - Date.now()) / 1000);
       this.log(`[SubtitleManager] Timedtext rate-limit cooldown active (${remainingSec}s remaining). Fetch blocked.`);
+      this.lastFetchStatus = { state: 'temporary-failure', message: `Caption service cooldown (${remainingSec}s).` };
       return [];
     }
 
     // 2. Negative cache: do not re-request URLs that already failed or 404'd
     if (this.failedUrls && this.failedUrls.has(baseUrl)) {
+      this.lastFetchStatus = { state: 'unavailable', status: 404, message: 'Caption track previously returned HTTP 404.' };
       return [];
     }
 
     // 3. In-memory cache hit: 0 network requests!
     if (this.trackCache && this.trackCache.has(baseUrl)) {
-      return this.trackCache.get(baseUrl);
+      const cachedCues = this.trackCache.get(baseUrl);
+      this.lastFetchStatus = { state: 'available', cached: true, cueCount: cachedCues.length, message: '' };
+      return cachedCues;
     }
 
     // 4. In-flight request deduplication: return existing pending promise
@@ -746,6 +755,7 @@ export class SubtitleManager {
         SubtitleManager.lastRequestTime = Date.now();
 
         const isTranslated = baseUrl.includes('tlang=');
+        this.lastFetchStatus = { state: 'extracting', message: '' };
         let rawContent = '';
         let targetUrl = baseUrl;
 
@@ -759,19 +769,19 @@ export class SubtitleManager {
         if (this.sendBridgeRequest) {
           try {
             bridgeResponse = await this.sendBridgeRequest(targetUrl);
-          } catch (err) {}
+          } catch (err) {
+            this.lastFetchStatus = { state: 'temporary-failure', message: `Page bridge request failed: ${err.message}` };
+          }
         }
 
         if (bridgeResponse) {
           if (bridgeResponse.status === 429 || bridgeResponse.status === 403) {
-            SubtitleManager.cooldownUntil = Date.now() + 60000;
-            this.failedUrls.add(baseUrl);
-            this.log(`[SubtitleManager] YouTube rate limit reached (HTTP ${bridgeResponse.status}). Cooldown activated for 60s.`);
-            return [];
-          }
-          if (bridgeResponse.status === 404) {
-            this.failedUrls.add(baseUrl);
-            return [];
+            this.lastFetchStatus = { state: 'temporary-failure', status: bridgeResponse.status, message: `Caption request returned HTTP ${bridgeResponse.status}.` };
+            this.log(`[Captions] Page request returned HTTP ${bridgeResponse.status}; trying the background fetch path.`);
+          } else if (bridgeResponse.status === 404) {
+            this.lastFetchStatus = { state: 'temporary-failure', status: 404, message: 'Page request returned HTTP 404; trying the background fetch path.' };
+          } else if (!bridgeResponse.ok && bridgeResponse.status >= 500) {
+            this.lastFetchStatus = { state: 'temporary-failure', status: bridgeResponse.status, message: `Page request returned HTTP ${bridgeResponse.status}.` };
           }
           if (bridgeResponse.ok && bridgeResponse.data) {
             rawContent = String(bridgeResponse.data).trim();
@@ -779,28 +789,41 @@ export class SubtitleManager {
         }
 
         // Channel 2: Background script fallback (runs via extension service worker with host permissions)
-        if (!rawContent && !(bridgeResponse && (bridgeResponse.status === 429 || bridgeResponse.status === 403))) {
+        if (!rawContent) {
           try {
             const bgRes = await this.sendBackgroundRequest('FETCH_CAPTION_TRACK', { url: targetUrl });
             if (bgRes) {
               if (bgRes.status === 429 || bgRes.status === 403 || String(bgRes.error).includes('429')) {
                 SubtitleManager.cooldownUntil = Date.now() + 60000;
-                this.failedUrls.add(baseUrl);
+                this.lastFetchStatus = { state: 'temporary-failure', status: bgRes.status, message: bgRes.error || `Caption request returned HTTP ${bgRes.status}.` };
                 this.log(`[SubtitleManager] YouTube rate limit reached in background. Cooldown activated for 60s.`);
                 return [];
               }
               if (bgRes.status === 404) {
                 this.failedUrls.add(baseUrl);
+                this.lastFetchStatus = { state: 'unavailable', status: 404, message: 'Caption track returned HTTP 404.' };
                 return [];
               }
               if (bgRes.ok && bgRes.data) {
                 rawContent = String(bgRes.data).trim();
+              } else if (!bgRes.ok) {
+                this.lastFetchStatus = {
+                  state: bgRes.status >= 500 || !bgRes.status ? 'temporary-failure' : 'extraction-failed',
+                  status: bgRes.status,
+                  message: bgRes.error || `Caption request failed${bgRes.status ? ` with HTTP ${bgRes.status}` : ''}.`
+                };
               }
             }
-          } catch (bgErr) {}
+          } catch (bgErr) {
+            this.lastFetchStatus = { state: 'temporary-failure', message: `Background request failed: ${bgErr.message}` };
+          }
         }
 
         if (!rawContent) {
+          if (this.lastFetchStatus.state === 'extracting') {
+            this.lastFetchStatus = { state: 'extraction-failed', message: 'Caption track returned no readable content.' };
+          }
+          this.log(`[Captions] Transcript retrieval failed: ${this.lastFetchStatus.state}${this.lastFetchStatus.status ? ` (HTTP ${this.lastFetchStatus.status})` : ''}.`);
           return [];
         }
 
@@ -817,10 +840,18 @@ export class SubtitleManager {
 
         if (parsed.length > 0) {
           this.trackCache.set(baseUrl, parsed);
+          this.lastFetchStatus = { state: 'available', cueCount: parsed.length, format: rawContent.trimStart()[0] === '{' ? 'json3' : rawContent.includes('-->') ? 'vtt' : 'xml', message: '' };
+          this.log(`[Captions] Transcript extracted successfully: ${parsed.length} cue(s), format=${this.lastFetchStatus.format}.`);
           return parsed;
         }
 
+        this.lastFetchStatus = { state: 'extraction-failed', message: 'Caption response was received but could not be parsed into cues.' };
+        this.log('[Captions] Transcript response could not be parsed into cues.');
         return [];
+      } catch (err) {
+        this.lastFetchStatus = { state: 'extraction-failed', message: err.message };
+        this.log(`[Captions] Transcript extraction threw: ${err.message}`);
+        throw err;
       } finally {
         this.inFlightRequests.delete(baseUrl);
       }

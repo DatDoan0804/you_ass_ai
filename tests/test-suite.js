@@ -10,6 +10,8 @@
  */
 
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 process.env.NODE_ENV = 'test';
 process.env.YT_LEARN_NO_LISTEN = '1';
 import { parseVttOrSrt, findInCache } from '../server/subtitle-server.js';
@@ -1335,6 +1337,239 @@ This is a dual subtitle demonstration.
     assert.strictEqual(meta.translationLanguages[0].languageCode, 'es');
   });
 
+  await test('Page bridge distinguishes manual, automatic, translated, missing, and stale caption metadata', async () => {
+    const source = readFileSync(new URL('../src/content/page-bridge.js', import.meta.url), 'utf8');
+    const runBridge = async (playerResponse, href) => {
+      let listener = null;
+      let response = null;
+      const window = {
+        location: new URL(href),
+        ytInitialPlayerResponse: playerResponse,
+        addEventListener: (_type, fn) => { listener = fn; },
+        postMessage: (message) => { response = message; }
+      };
+      const document = {
+        title: 'Caption test - YouTube',
+        getElementById: () => null,
+        querySelector: () => null,
+        querySelectorAll: () => []
+      };
+      vm.runInNewContext(source, {
+        window,
+        document,
+        URL,
+        URLSearchParams,
+        performance: { getEntriesByType: () => [] }
+      });
+      await listener({
+        source: window,
+        data: { type: 'YT_AI_LEARNING_REQUEST_METADATA', requestId: 'caption-test' }
+      });
+      return response.metadata;
+    };
+
+    const response = {
+      videoDetails: { videoId: 'captionTest01', title: 'Caption test', lengthSeconds: '60' },
+      captions: { playerCaptionsTracklistRenderer: {
+        captionTracks: [
+          { baseUrl: 'https://www.youtube.com/api/timedtext?v=captionTest01&lang=en', languageCode: 'en', name: { simpleText: 'English' } },
+          { baseUrl: 'https://www.youtube.com/api/timedtext?v=captionTest01&lang=de&kind=asr', languageCode: 'de', kind: 'asr', name: { simpleText: 'German (auto-generated)' } }
+        ],
+        translationLanguages: [{ languageCode: 'vi', languageName: { simpleText: 'Vietnamese' } }]
+      } }
+    };
+    const available = await runBridge(response, 'https://www.youtube.com/watch?v=captionTest01');
+    assert.strictEqual(available.captionAvailability, 'available');
+    assert.strictEqual(available.captionTracks.length, 2);
+    assert.strictEqual(available.captionTracks[0].kind, 'standard', 'Manual tracks keep their manual kind');
+    assert.strictEqual(available.captionTracks[1].kind, 'asr', 'Auto-generated tracks remain distinguishable');
+    assert.strictEqual(available.translationLanguages[0].languageCode, 'vi');
+
+    const noCaptions = await runBridge({
+      videoDetails: { videoId: 'captionTest01' },
+      captions: { playerCaptionsTracklistRenderer: { captionTracks: [], translationLanguages: [] } }
+    }, 'https://www.youtube.com/watch?v=captionTest01');
+    assert.strictEqual(noCaptions.captionAvailability, 'unavailable');
+    assert.strictEqual(noCaptions.captionTracks.length, 0);
+
+    const stale = await runBridge(response, 'https://www.youtube.com/watch?v=nextVideo001');
+    assert.strictEqual(stale.videoId, 'nextVideo001', 'Current route ID takes precedence during YouTube SPA navigation');
+    assert.strictEqual(stale.captionAvailability, 'unknown', 'Previous video tracks are not attributed to the new video');
+    assert.strictEqual(stale.captionTracks.length, 0);
+  });
+
+  await test('Caption retrieval parses a real cached VTT track and keeps 403 failures retryable', async () => {
+    const vtt = readFileSync(new URL('../subtitles_cache/LAEQ84LRcbM.en.vtt', import.meta.url), 'utf8');
+    SubtitleManager.resetRateLimitState();
+    let pageRequests = 0;
+    const manager = new SubtitleManager(async () => ({ ok: false }), () => {}, async () => {
+      pageRequests++;
+      if (pageRequests === 1) return { ok: false, status: 403, error: 'temporary page request denial' };
+      return { ok: true, status: 200, data: vtt };
+    });
+    const trackUrl = 'https://www.youtube.com/api/timedtext?v=LAEQ84LRcbM&lang=en';
+    const failed = await manager.fetchAndParseTrack(trackUrl);
+    assert.deepStrictEqual(failed, []);
+    assert.strictEqual(manager.lastFetchStatus.state, 'temporary-failure');
+    assert.ok(!manager.failedUrls.has(trackUrl), 'A 403 is not cached as a missing caption track');
+
+    SubtitleManager.resetRateLimitState();
+    const cues = await manager.fetchAndParseTrack(trackUrl);
+    assert.ok(cues.length > 0, 'The retry returned parsed cues');
+    assert.strictEqual(manager.lastFetchStatus.state, 'available');
+    assert.strictEqual(manager.lastFetchStatus.format, 'vtt');
+    assert.ok(manager.lastFetchStatus.cueCount > 0);
+
+    const json3 = JSON.stringify({ events: [
+      { tStartMs: 0, dDurationMs: 1800, segs: [{ utf8: 'Structured caption response.' }] }
+    ] });
+    const jsonManager = new SubtitleManager(async () => ({ ok: false }), () => {}, async () => ({ ok: true, status: 200, data: json3 }));
+    const jsonCues = await jsonManager.fetchAndParseTrack('https://www.youtube.com/api/timedtext?v=LAEQ84LRcbM&lang=en&fmt=json3');
+    assert.strictEqual(jsonCues.length, 1);
+    assert.strictEqual(jsonManager.lastFetchStatus.format, 'json3');
+
+    const malformedManager = new SubtitleManager(async () => ({ ok: false }), () => {}, async () => ({ ok: true, status: 200, data: '<caption-response/>' }));
+    assert.deepStrictEqual(await malformedManager.fetchAndParseTrack('https://www.youtube.com/api/timedtext?v=badCaption001&lang=en'), []);
+    assert.strictEqual(malformedManager.lastFetchStatus.state, 'extraction-failed', 'A malformed response is not reported as missing captions');
+  });
+
+  await test('Track selection prefers the requested language, then accepts an automatic track', async () => {
+    const tracks = [
+      { languageCode: 'en', kind: 'standard', baseUrl: 'https://example.com/en' },
+      { languageCode: 'vi', kind: 'asr', baseUrl: 'https://example.com/vi-asr' }
+    ];
+    assert.strictEqual(SubtitleManager.selectBestTrack(tracks, 'vi-VN').languageCode, 'vi');
+    assert.strictEqual(SubtitleManager.selectBestTrack([{ ...tracks[1] }], 'vi').kind, 'asr');
+  });
+
+  await test('YouTube translated-caption fallback requests the chosen tlang and parses its response', async () => {
+    let requestedUrl = '';
+    const xml = '<transcript><text start="0" dur="2">Xin chào mọi người.</text></transcript>';
+    const manager = new SubtitleManager(async () => ({ ok: false }), () => {}, async (url) => {
+      requestedUrl = url;
+      return { ok: true, status: 200, data: xml };
+    });
+    manager.currentVideoId = 'translatedCaption01';
+    const loaded = await manager.loadSecondaryTrack([], 'vi', {
+      languageCode: 'en',
+      baseUrl: 'https://www.youtube.com/api/timedtext?v=translatedCaption01&lang=en'
+    }, { videoId: 'translatedCaption01' }, true);
+    assert.strictEqual(loaded, true);
+    assert.ok(requestedUrl.includes('tlang=vi'));
+    assert.strictEqual(manager.secondaryTrack.isTranslated, true);
+    assert.strictEqual(manager.secondaryCues[0].text, 'Xin chào mọi người.');
+  });
+
+  await test('DOM metadata fallback does not attach old-video caption tracks to the current video', async () => {
+    const originalDocument = globalThis.document;
+    const oldResponse = {
+      videoDetails: { videoId: 'oldVideo001' },
+      captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+        { baseUrl: 'https://www.youtube.com/api/timedtext?v=oldVideo001&lang=en', languageCode: 'en' }
+      ] } }
+    };
+    globalThis.document = {
+      querySelectorAll: () => [{ textContent: `var ytInitialPlayerResponse = ${JSON.stringify(oldResponse)};` }],
+      title: 'Current video - YouTube'
+    };
+    try {
+      const controller = new VideoController({ onVideoChanged: () => {}, onTimeUpdate: () => {} });
+      assert.strictEqual(controller.extractMetadataFromDOM('newVideo001'), null);
+    } finally {
+      globalThis.document = originalDocument;
+    }
+  });
+
+  await test('VideoController keeps checking until late caption-track metadata appears', async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (callback) => { Promise.resolve().then(callback); return 0; };
+    try {
+      const controller = new VideoController({ onVideoChanged: () => {}, onTimeUpdate: () => {}, logger: () => {} });
+      controller.currentVideoId = 'lateCaption001';
+      controller.sessionEpoch = 7;
+      controller.extractMetadataFromDOM = () => null;
+      let requests = 0;
+      controller.requestBridgeMetadata = async () => {
+        requests++;
+        return requests < 4
+          ? { videoId: 'lateCaption001', captionTracks: [], captionAvailability: 'unknown' }
+          : {
+              videoId: 'lateCaption001',
+              captionTracks: [{ languageCode: 'en', kind: 'asr', baseUrl: 'https://www.youtube.com/api/timedtext?v=lateCaption001&lang=en&kind=asr' }],
+              captionAvailability: 'available'
+            };
+      };
+      const metadata = await controller.fetchPlayerMetadataWithRetry('lateCaption001', 7);
+      assert.strictEqual(requests, 4);
+      assert.strictEqual(metadata.captionAvailability, 'available');
+      assert.strictEqual(metadata.captionTracks[0].kind, 'asr');
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  await test('Late track discovery reloads the original transcript and hands it to Prep Vocabulary', async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    let scheduledRetry = null;
+    globalThis.setTimeout = (callback) => {
+      scheduledRetry = Promise.resolve().then(callback);
+      return 0;
+    };
+    try {
+      const app = new YouTubeLearningAssistantApp({ requestHandler: async () => ({ ok: true }), logger: () => {} });
+      const videoId = 'lateTranscript001';
+      const sessionEpoch = 11;
+      const originalCues = [{ start: 0, end: 3, text: 'A distinctive phrase from the actual captions.' }];
+      const lateMetadata = {
+        videoId,
+        title: 'Late captions video',
+        chapters: [],
+        captionAvailability: 'available',
+        captionTracks: [{
+          languageCode: 'en',
+          name: 'English',
+          kind: 'asr',
+          baseUrl: 'https://www.youtube.com/api/timedtext?v=lateTranscript001&lang=en&kind=asr'
+        }]
+      };
+      app.currentVideoId = videoId;
+      app.sessionEpoch = sessionEpoch;
+      app.videoMetadata = { videoId, chapters: [], captionAvailability: 'unknown', captionTracks: [] };
+      app.lastSubtitleResult = { hasSubtitles: false, cues: [], chunks: [], primaryCues: [] };
+      app.vocabularyPrepGate = true;
+      app.settings = { enableDualSubtitles: false, primarySubtitleLang: 'en', useAiBreakpoints: false };
+      app.videoController.isSessionValid = () => true;
+      app.videoController.requestBridgeMetadata = async () => lateMetadata;
+      app.videoController.getCurrentTime = () => 0;
+      app.subtitleManager.loadSubtitlesForVideo = async () => ({
+        hasSubtitles: false,
+        cues: [],
+        chunks: [],
+        primaryCues: [],
+        availableTracks: lateMetadata.captionTracks
+      });
+      app.subtitleManager.fetchAndParseTrack = async () => {
+        app.subtitleManager.lastFetchStatus = { state: 'available', cueCount: originalCues.length };
+        return originalCues;
+      };
+      app.prepareVideoVocabulary = async (_videoId, _epoch, cues) => { app.preparedTranscript = cues; };
+      app.uiManager.setAvailableTracks = () => {};
+      app.uiManager.renderDualSubtitles = () => {};
+      app.breakpointDetector.seedInitialCandidates = () => {};
+      app.syncTimelineMarkers = () => {};
+
+      app.scheduleLateMetadataCheck(videoId, sessionEpoch, 0);
+      await scheduledRetry;
+      assert.strictEqual(app.videoMetadata.captionTracks.length, 1);
+      assert.strictEqual(app.preparedTranscript[0].text, originalCues[0].text);
+      assert.strictEqual(app.lastSubtitleResult.primaryCues.length, 1);
+      assert.strictEqual(app.lastSubtitleResult.hasSubtitles, true);
+      assert.ok(app.subtitleManager.cues.length > 0, 'The extracted transcript is available to other transcript users');
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
   await test('VideoController.requestBridgeMetadata resolves both metadata and payload properties', async () => {
     let capturedHandler = null;
     let postedMsg = null;
@@ -2379,6 +2614,26 @@ berlin and more than any other city i've
     app.subtitleManager.primaryTrack = null;
     const cues = await app.getOriginalTranscriptCues({ primaryCues: [], cues: [] });
     assert.deepStrictEqual(cues, []);
+  });
+
+  await test('Original transcript selection honors the learner language over a cached different-language track', async () => {
+    const app = new YouTubeLearningAssistantApp({ requestHandler: async () => ({ ok: true }), logger: () => {} });
+    const selectedCues = [{ start: 0, end: 2, text: 'Bonjour tout le monde.' }];
+    app.currentVideoId = 'languagePreference01';
+    app.videoMetadata = { captionTracks: [
+      { languageCode: 'en', kind: 'standard', baseUrl: 'https://www.youtube.com/api/timedtext?v=languagePreference01&lang=en' },
+      { languageCode: 'fr', kind: 'asr', baseUrl: 'https://www.youtube.com/api/timedtext?v=languagePreference01&lang=fr&kind=asr' }
+    ] };
+    app.settings = { primarySubtitleLang: 'fr-FR' };
+    app.subtitleManager.primaryTrack = { languageCode: 'en', baseUrl: app.videoMetadata.captionTracks[0].baseUrl };
+    app.subtitleManager.primaryCues = [{ start: 0, end: 2, text: 'The cached English transcript.' }];
+    app.subtitleManager.fetchAndParseTrack = async (url) => {
+      assert.ok(url.includes('lang=fr'), 'Fetches the requested French track');
+      return selectedCues;
+    };
+    const cues = await app.getOriginalTranscriptCues({ primaryCues: app.subtitleManager.primaryCues });
+    assert.deepStrictEqual(cues, selectedCues);
+    assert.strictEqual(app.subtitleManager.primaryTrack.languageCode, 'fr');
   });
 
   await test('Empty vocabulary UI shows the real error and does not report a completed lesson', () => {

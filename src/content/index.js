@@ -292,6 +292,7 @@ export class YouTubeLearningAssistantApp {
     this.vocabulary = [];
     this._isFetchingSecondary = false;
     this._lastSecondaryFetchAttempt = 0;
+    this._lateCaptionRetrySessions = new Set();
 
     this.videoController = new VideoController({
       onVideoChanged: this.handleVideoChanged.bind(this),
@@ -553,28 +554,62 @@ export class YouTubeLearningAssistantApp {
       return;
     }
 
-    if (this.vocabularyPrepGate) {
-      let originalCues = [];
-      let originalTranscriptError = null;
-      try {
-        originalCues = await this.getOriginalTranscriptCues(subtitleResult);
-      } catch (err) {
-        originalTranscriptError = err;
-        this.log(`[Vocabulary] Original transcript extraction failed for ${videoId}: ${err.message}`);
+    let originalCues = [];
+    let originalTranscriptError = null;
+    try {
+      originalCues = await this.getOriginalTranscriptCues(subtitleResult);
+    } catch (err) {
+      originalTranscriptError = err;
+      this.log(`[Captions] Original transcript extraction failed for ${videoId}: ${err.message}`);
+    }
+    if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+    const originalChars = originalCues.reduce((total, cue) => total + String(cue.text || '').length, 0);
+    this.log(`[Captions] Original transcript ready for ${videoId}: cues=${originalCues.length}, chars=${originalChars}`);
+    if (originalCues.length > 0) {
+      subtitleResult.primaryCues = originalCues;
+      if (!subtitleResult.cues?.length) {
+        subtitleResult.cues = originalCues;
+        subtitleResult.chunks = SubtitleManager.buildSemanticChunks(originalCues, this.videoMetadata.chapters || [], 30);
+        subtitleResult.hasSubtitles = true;
+        this.subtitleManager.cues = originalCues;
+        this.subtitleManager.chunks = subtitleResult.chunks;
+        await db.saveTranscript(videoId, {
+          cues: originalCues,
+          chunks: subtitleResult.chunks,
+          primaryCues: originalCues,
+          primaryTrack: this.subtitleManager.primaryTrack,
+          trackInfo: this.subtitleManager.primaryTrack,
+          secondaryCues: this.subtitleManager.secondaryCues,
+          secondaryTrack: this.subtitleManager.secondaryTrack
+        }).catch(() => {});
       }
-      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
-      const originalChars = originalCues.reduce((total, cue) => total + String(cue.text || '').length, 0);
-      this.log(`[Vocabulary] Original transcript ready for ${videoId}: cues=${originalCues.length}, chars=${originalChars}`);
-      if (originalCues.length > 0) {
-        await this.prepareVideoVocabulary(videoId, sessionEpoch, originalCues);
-      } else if (subtitleLoadError || originalTranscriptError) {
-        const error = subtitleLoadError || originalTranscriptError;
-        this.uiManager.setVocabularyStatus('error', `Could not extract this video’s transcript (${error.message}). You can add words yourself or continue.`);
-      } else {
-        this.uiManager.setVocabularyStatus(
-          'unavailable',
-          'YouTube did not provide an original-language transcript for this video. Turn on captions or add a word yourself; we won’t invent a list.'
-        );
+      this.lastSubtitleResult = subtitleResult;
+      if (this.vocabularyPrepGate) await this.prepareVideoVocabulary(videoId, sessionEpoch, originalCues);
+    } else {
+      const tracks = this.videoMetadata?.captionTracks || [];
+      const availability = this.videoMetadata?.captionAvailability || 'unknown';
+      if (this.vocabularyPrepGate) {
+        if (tracks.length > 0) {
+          const fetchStatus = this.subtitleManager.lastFetchStatus || {};
+          const detail = originalTranscriptError?.message || subtitleLoadError?.message || fetchStatus.message;
+          this.uiManager.setVocabularyStatus(
+            'error',
+            `YouTube listed ${tracks.length} caption track(s), but the transcript could not be read${detail ? `: ${detail}` : '.'} We’ll check again; you can retry or continue.`
+          );
+        } else if (availability === 'unavailable') {
+          this.uiManager.setVocabularyStatus(
+            'unavailable',
+            'YouTube did not provide caption tracks after repeated checks. We did not invent vocabulary; add words yourself or continue to the video.'
+          );
+        } else if (subtitleLoadError || originalTranscriptError) {
+          const error = subtitleLoadError || originalTranscriptError;
+          this.uiManager.setVocabularyStatus('error', `Could not extract this video’s transcript (${error.message}). You can add words yourself or continue.`);
+        } else {
+          this.uiManager.setVocabularyStatus('preparing', 'Caption availability is not confirmed yet. Checking again before we decide.');
+        }
+      }
+      if (tracks.length > 0 || availability !== 'unavailable') {
+        this.scheduleLateMetadataCheck(videoId, sessionEpoch, 0);
       }
     }
 
@@ -603,10 +638,6 @@ export class YouTubeLearningAssistantApp {
     // Every video has breakpoints regardless of entertainment or education.
     // The Gemini AI is responsible for deciding breakpoints and generating questions.
     const hasChapters = this.settings.useYoutubeChapters !== false && chapters.length > 0;
-    if (!subtitleResult.hasSubtitles && !hasChapters) {
-      this.scheduleLateMetadataCheck(videoId, sessionEpoch, 0);
-    }
-
     // 1. Immediate heuristic seed so timeline markers appear instantly
     this.breakpointDetector.seedInitialCandidates(
       subtitleResult.chunks,
@@ -637,28 +668,70 @@ export class YouTubeLearningAssistantApp {
     const cachedPrimary = (subtitleResult.primaryCues?.length > 0 && subtitleResult.primaryCues) ||
       (this.subtitleManager.primaryCues?.length > 0 && this.subtitleManager.primaryCues) || [];
     this.log(`[Vocabulary] Checking original transcript sources: cachedPrimary=${cachedPrimary.length}, metadataTracks=${this.videoMetadata?.captionTracks?.length || 0}`);
-    if (Array.isArray(cachedPrimary) && cachedPrimary.length > 0) return cachedPrimary;
-
-    const tracks = this.videoMetadata?.captionTracks || [];
+    const tracks = (this.videoMetadata?.captionTracks || []).filter((track) => {
+      if (!track?.baseUrl) return false;
+      try { return !new URL(track.baseUrl).searchParams.has('tlang'); } catch { return !String(track.baseUrl).includes('tlang='); }
+    });
     const preferred = this.settings.primarySubtitleLang || 'auto';
-    const selected = this.subtitleManager.primaryTrack;
-    const candidate = (selected?.baseUrl && tracks.find((track) => track.baseUrl === selected.baseUrl)) ||
-      SubtitleManager.selectBestTrack(tracks, preferred) ||
-      tracks.find((track) => track.baseUrl);
-    if (!candidate?.baseUrl) {
+    const selected = this.subtitleManager.primaryTrack || subtitleResult.primaryTrack || subtitleResult.trackInfo;
+    const preferredPrefix = preferred === 'auto' ? '' : preferred.toLowerCase().split('-')[0];
+    const selectedMatchesPreference = !preferredPrefix || (selected?.languageCode || '').toLowerCase().startsWith(preferredPrefix);
+    if (Array.isArray(cachedPrimary) && cachedPrimary.length > 0 && selectedMatchesPreference) return cachedPrimary;
+
+    const preferredTrack = SubtitleManager.selectBestTrack(tracks, preferred);
+    const candidates = [
+      preferredTrack,
+      ...tracks.filter((track) => track.kind !== 'asr'),
+      ...tracks
+    ].filter((track, index, all) => track?.baseUrl && all.findIndex((item) => item?.baseUrl === track.baseUrl) === index);
+    if (candidates.length === 0) {
       this.log('[Vocabulary] No fetchable original caption track found.');
       return [];
     }
 
-    try {
-      this.log(`[Vocabulary] Fetching original caption track language=${candidate.languageCode || 'unknown'}, kind=${candidate.kind || 'manual'}`);
-      const cues = await this.subtitleManager.fetchAndParseTrack(candidate.baseUrl);
-      this.log(`[Vocabulary] Original caption fetch parsed ${cues.length} cues.`);
-      return cues;
-    } catch (err) {
-      this.log(`[Vocabulary] Could not load the original caption track: ${err.message}`);
-      throw err;
+    let lastError = null;
+    for (const candidate of candidates) {
+      try {
+        this.log(`[Captions] Fetching ${candidate.languageCode || 'unknown'} ${candidate.kind === 'asr' ? 'automatic' : 'manual'} track.`);
+        const cues = await this.subtitleManager.fetchAndParseTrack(candidate.baseUrl);
+        if (cues.length > 0) {
+          const cleanCues = SubtitleManager.cleanAndMergeCues(cues);
+          const track = {
+            languageCode: candidate.languageCode,
+            name: candidate.name,
+            isAutoGenerated: candidate.kind === 'asr',
+            baseUrl: candidate.baseUrl
+          };
+          this.subtitleManager.primaryTrack = track;
+          this.subtitleManager.selectedTrack = track;
+          this.subtitleManager.primaryCues = cleanCues;
+          subtitleResult.primaryCues = cleanCues;
+          const cached = await db.getTranscript(this.currentVideoId).catch(() => null);
+          const saveCues = cached?.cues?.length ? cached.cues : this.subtitleManager.cues;
+          const saveChunks = cached?.chunks?.length
+            ? cached.chunks
+            : (saveCues?.length ? SubtitleManager.buildSemanticChunks(saveCues, this.videoMetadata?.chapters || [], 30) : []);
+          await db.saveTranscript(this.currentVideoId, {
+            ...(cached || {}),
+            cues: saveCues?.length ? saveCues : cleanCues,
+            chunks: saveChunks.length ? saveChunks : SubtitleManager.buildSemanticChunks(cleanCues, this.videoMetadata?.chapters || [], 30),
+            trackInfo: cached?.trackInfo || track,
+            primaryCues: cleanCues,
+            primaryTrack: track
+          }).catch(() => {});
+          this.log(`[Captions] Original transcript extraction succeeded: ${cleanCues.length} cues, ${cleanCues.reduce((n, cue) => n + String(cue.text || '').length, 0)} characters.`);
+          return cleanCues;
+        }
+        this.log(`[Captions] Track ${candidate.languageCode || 'unknown'} returned no cues (${this.subtitleManager.lastFetchStatus?.state || 'unknown'}).`);
+        if (this.subtitleManager.lastFetchStatus?.state === 'temporary-failure') break;
+      } catch (err) {
+        lastError = err;
+        this.log(`[Captions] Could not read ${candidate.languageCode || 'unknown'} track: ${err.message}`);
+        if (this.subtitleManager.lastFetchStatus?.state === 'temporary-failure') break;
+      }
     }
+    if (lastError) throw lastError;
+    return [];
   }
 
   static validateVocabularyResponse(response, transcriptCues = []) {
@@ -827,10 +900,18 @@ export class YouTubeLearningAssistantApp {
         ]
       });
 
+      const transcriptForCache = this.subtitleManager.cues || [];
+      const cacheInput = transcriptForCache.map((cue) => `${cue.start || 0}:${cue.text || ''}`).join('|');
+      let transcriptHash = 2166136261;
+      for (let i = 0; i < cacheInput.length; i++) {
+        transcriptHash ^= cacheInput.charCodeAt(i);
+        transcriptHash = Math.imul(transcriptHash, 16777619);
+      }
+
       const res = await this.requestHandler('AI_PLAN_BREAKPOINTS_AND_ACTIVITIES', {
         videoId,
         sessionEpoch,
-        cacheKey: `plan_bp_${videoId}`,
+        cacheKey: `plan_bp_${videoId}_${transcriptForCache.length}_${(transcriptHash >>> 0).toString(16)}`,
         promptSpec
       });
 
@@ -860,41 +941,141 @@ export class YouTubeLearningAssistantApp {
   }
 
   scheduleLateMetadataCheck(videoId, sessionEpoch, retryCount = 0) {
-    if (retryCount >= 4) return;
+    const retryKey = `${videoId}:${sessionEpoch}`;
+    const retryDelays = [1200, 2000, 3200, 4800, 6500];
+    if (retryCount === 0) {
+      if (this._lateCaptionRetrySessions.has(retryKey)) return;
+      this._lateCaptionRetrySessions.add(retryKey);
+    }
+
+    if (retryCount >= retryDelays.length) {
+      this._lateCaptionRetrySessions.delete(retryKey);
+      if (!this.videoController.isSessionValid(videoId, sessionEpoch) || this.lastSubtitleResult?.primaryCues?.length) return;
+      const tracks = this.videoMetadata?.captionTracks || [];
+      const availability = this.videoMetadata?.captionAvailability || 'unknown';
+      if (this.vocabularyPrepGate) {
+        if (tracks.length > 0) {
+          this.uiManager.setVocabularyStatus(
+            'error',
+            `YouTube listed captions, but none of the available tracks could be read. Check your connection and retry; you can also continue without a word list.`
+          );
+        } else if (availability === 'unavailable') {
+          this.uiManager.setVocabularyStatus(
+            'unavailable',
+            'YouTube confirmed that this video has no caption tracks. We did not invent vocabulary; add words yourself or continue to the video.'
+          );
+        } else {
+          this.uiManager.setVocabularyStatus(
+            'error',
+            'Could not confirm whether this video has captions. Try checking again, or continue to the video.'
+          );
+        }
+      }
+      this.log(`[Captions] Retry window ended for ${videoId}: availability=${availability}, tracks=${tracks.length}.`);
+      return;
+    }
+
     setTimeout(async () => {
-      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
-      if (this.lastSubtitleResult?.hasSubtitles || this.videoMetadata?.captionTracks?.length > 0) {
+      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
+        this._lateCaptionRetrySessions.delete(retryKey);
         return;
       }
 
-      const metadata = await this.videoController.requestBridgeMetadata();
-      if (
-        metadata &&
-        metadata.videoId === videoId &&
-        metadata.captionTracks?.length > 0
-      ) {
-        this.log(
-          `[Breakpoint] Late caption tracks discovered: ${metadata.captionTracks?.length || 0} tracks.`
-        );
-        this.videoMetadata = { ...this.videoMetadata, ...metadata };
-        this.uiManager.setAvailableTracks(
-          metadata.captionTracks || [],
-          this.videoMetadata.translationLanguages || []
-        );
+      let metadata = null;
+      try {
+        metadata = await this.videoController.requestBridgeMetadata();
+      } catch (err) {
+        this.log(`[Captions] Metadata retry ${retryCount + 1} failed: ${err.message}`);
+      }
 
-        if (this.settings.enableDualSubtitles !== false && this.subtitleManager) {
-          await this.subtitleManager.downloadSecondaryTrackOnDemand(
-            this.settings.secondarySubtitleLang || 'en',
-            this.videoMetadata
-          );
-          const currentTime = this.videoController.getCurrentTime();
-          const activeCues = this.subtitleManager.getActiveDualCues(currentTime);
-          this.uiManager.renderDualSubtitles(activeCues, this.settings);
+      if (metadata && metadata.videoId === videoId) {
+        const incomingTracks = Array.isArray(metadata.captionTracks) ? metadata.captionTracks : [];
+        this.videoMetadata = {
+          ...this.videoMetadata,
+          ...metadata,
+          captionTracks: incomingTracks.length ? incomingTracks : (this.videoMetadata?.captionTracks || []),
+          captionAvailability: incomingTracks.length
+            ? 'available'
+            : metadata.captionAvailability || this.videoMetadata?.captionAvailability || 'unknown',
+          translationLanguages: metadata.translationLanguages?.length
+            ? metadata.translationLanguages
+            : (this.videoMetadata?.translationLanguages || [])
+        };
+
+        if (incomingTracks.length > 0) {
+          this.log(`[Captions] Late discovery succeeded for ${videoId}: ${incomingTracks.length} track(s).`);
+          this.uiManager.setAvailableTracks(incomingTracks, this.videoMetadata.translationLanguages || []);
+          try {
+            const secondaryLang = this.settings.enableDualSubtitles !== false
+              ? this.settings.secondarySubtitleLang || 'en'
+              : 'none';
+            const result = await this.subtitleManager.loadSubtitlesForVideo(
+              this.videoMetadata,
+              this.settings.primarySubtitleLang || 'auto',
+              secondaryLang,
+              { enableDualSubtitles: this.settings.enableDualSubtitles !== false }
+            );
+            if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
+              this._lateCaptionRetrySessions.delete(retryKey);
+              return;
+            }
+            this.lastSubtitleResult = result;
+            const primaryCues = await this.getOriginalTranscriptCues(result);
+            if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
+              this._lateCaptionRetrySessions.delete(retryKey);
+              return;
+            }
+
+            if (primaryCues.length > 0) {
+              result.primaryCues = primaryCues;
+              if (!result.cues?.length) {
+                result.cues = primaryCues;
+                result.chunks = SubtitleManager.buildSemanticChunks(primaryCues, this.videoMetadata.chapters || [], 30);
+                result.hasSubtitles = true;
+                this.subtitleManager.cues = primaryCues;
+                this.subtitleManager.chunks = result.chunks;
+                await db.saveTranscript(videoId, {
+                  cues: primaryCues,
+                  chunks: result.chunks,
+                  primaryCues,
+                  primaryTrack: this.subtitleManager.primaryTrack,
+                  trackInfo: this.subtitleManager.primaryTrack,
+                  secondaryCues: this.subtitleManager.secondaryCues,
+                  secondaryTrack: this.subtitleManager.secondaryTrack
+                }).catch(() => {});
+              }
+              this.lastSubtitleResult = result;
+              this.log(`[Captions] Late transcript extraction succeeded for ${videoId}: ${primaryCues.length} cue(s).`);
+              if (this.vocabularyPrepGate) await this.prepareVideoVocabulary(videoId, sessionEpoch, primaryCues);
+              if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
+                this._lateCaptionRetrySessions.delete(retryKey);
+                return;
+              }
+
+              const chapters = this.videoMetadata.chapters || [];
+              this.breakpointDetector.seedInitialCandidates(result.chunks || [], chapters, this.getEffectiveDuration(), videoId);
+              this.syncTimelineMarkers();
+              if (this.settings.useAiBreakpoints !== false) {
+                await this.planBreakpointsWithGemini(videoId, sessionEpoch, result, chapters);
+              }
+              const activeCues = this.subtitleManager.getActiveDualCues(this.videoController.getCurrentTime());
+              this.uiManager.renderDualSubtitles(activeCues, this.settings);
+              this._lateCaptionRetrySessions.delete(retryKey);
+              return;
+            }
+            this.log(`[Captions] Tracks were discovered for ${videoId}, but extraction is ${this.subtitleManager.lastFetchStatus?.state || 'unknown'}; retrying.`);
+          } catch (err) {
+            this.log(`[Captions] Late caption processing failed for ${videoId}: ${err.message}`);
+          }
+        } else {
+          this.log(`[Captions] Retry ${retryCount + 1} found no caption tracks for ${videoId} (${this.videoMetadata.captionAvailability || 'unknown'}).`);
         }
       } else {
-        this.scheduleLateMetadataCheck(videoId, sessionEpoch, retryCount + 1);
+        this.log(`[Captions] Retry ${retryCount + 1} metadata did not match current video ${videoId}.`);
       }
-    }, 1200 * (retryCount + 1));
+
+      this.scheduleLateMetadataCheck(videoId, sessionEpoch, retryCount + 1);
+    }, retryDelays[retryCount]);
   }
 
   handleUserSeek(newTime, videoId, sessionEpoch) {
