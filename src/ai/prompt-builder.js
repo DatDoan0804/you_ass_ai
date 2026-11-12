@@ -469,6 +469,36 @@ export const SCHEMAS = {
         type: 'STRING',
         description: 'Concise 2-sentence summary of the video content and main learning theme.'
       },
+      newWords: {
+        type: 'ARRAY',
+        description: 'Table of new words, specialized vocabulary, key terms, or idioms from the video in the original language, allowing the user to take a quick glance before diving into the video (independent from breakpoints).',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            word: {
+              type: 'STRING',
+              description: 'The word or phrase in its original language as spoken/used in the video transcript.'
+            },
+            pronunciation: {
+              type: 'STRING',
+              description: 'Optional pronunciation guide, phonetic spelling, pinyin, romaji, or IPA if applicable.'
+            },
+            meaning: {
+              type: 'STRING',
+              description: 'Clear, concise translation or definition in plain, friendly language.'
+            },
+            context: {
+              type: 'STRING',
+              description: 'Brief example phrase or sentence from the video transcript showing how it was used.'
+            },
+            timestamp: {
+              type: 'NUMBER',
+              description: 'Timestamp in seconds where the word appears or is introduced in the video.'
+            }
+          },
+          required: ['word', 'meaning']
+        }
+      },
       breakpoints: {
         type: 'ARRAY',
         description: 'Chronologically ordered list of learning checkpoints with questions.',
@@ -924,7 +954,17 @@ CRITICAL INSTRUCTIONS — ULTRA-CASUAL, NATURAL & DIRECTLY TIED TO THE VIDEO:
 7. LANGUAGE:
    - If the video transcript is in Vietnamese (or another non-English language), generate the questions and options in that language using a friendly, natural, casual tone.
    - Otherwise, use simple, friendly, everyday English.
-8. GROUNDING: Everything must be strictly grounded in what actually happens in the video transcript.
+8. TABLE OF NEW WORDS IN ORIGINAL LANGUAGE (INDEPENDENT FROM BREAKPOINTS):
+   - You MUST extract a curated table of 5 to 15 key words, unfamiliar vocabulary, technical terms, or idioms in the "newWords" array.
+   - Every word MUST be in the ORIGINAL LANGUAGE of the video transcript (e.g. if the video is in French, Spanish, Japanese, Vietnamese, etc., the word is written in that original language; if in English, choose specialized, technical, or notable vocabulary).
+   - For each word, include:
+     * "word": The word or expression in the original language of the video transcript.
+     * "pronunciation": (Optional) Phonetic guide or reading if applicable (e.g., IPA, pinyin, hiragana/romaji).
+     * "meaning": Concise, plain explanation or translation in friendly everyday language.
+     * "context": Short snippet or sentence from the transcript showing where and how it was used in context.
+     * "timestamp": The approximate cue timestamp (in seconds) where it appears in the video.
+   - This table allows the viewer to take a quick glance at key vocabulary before diving into the video, completely independent from playback breakpoints.
+9. GROUNDING: Everything must be strictly grounded in what actually happens in the video transcript.
 
 Output a valid JSON object matching the schema.`;
 
@@ -967,7 +1007,7 @@ Transcript:
 ${transcriptText}
 """
 
-Generate the structured JSON plan of breakpoints and questions for this video according to the rules, including the final summary activity.`;
+Generate the structured JSON plan of breakpoints and questions for this video according to the rules, including the table of new words in the original language and the final summary activity.`;
 
     return {
       systemPrompt,

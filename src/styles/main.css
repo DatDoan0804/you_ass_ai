@@ -1179,3 +1179,149 @@
   background: #0f172a;
   color: #f8fafc;
 }
+
+/* ==========================================================================
+   Table of New Words & Key Vocabulary in Original Language (Independent from Breakpoint)
+   ========================================================================== */
+.yt-learn-overlay-backdrop.yt-learn-vocab-backdrop {
+  width: min(720px, 94vw);
+  max-width: 760px;
+  top: 56px;
+  right: 20px;
+}
+
+.yt-learn-vocab-card {
+  width: 100%;
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  box-shadow: 0 20px 48px -8px rgba(0, 0, 0, 0.75);
+}
+
+.yt-learn-icon-btn.active-vocab {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.14);
+  color: #7dd3fc;
+}
+
+.yt-learn-vocab-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.yt-learn-vocab-search {
+  flex: 1;
+  background: #0b1120;
+  border: 1px solid var(--yt-learn-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: #f1f5f9;
+  font-family: var(--yt-learn-font);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.yt-learn-vocab-search:focus {
+  border-color: var(--yt-learn-accent);
+  box-shadow: 0 0 0 1px var(--yt-learn-accent);
+}
+
+.yt-learn-vocab-table-container {
+  overflow-x: auto;
+  max-height: 52vh;
+  overflow-y: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(11, 17, 32, 0.7);
+}
+
+.yt-learn-vocab-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.yt-learn-vocab-table th {
+  position: sticky;
+  top: 0;
+  background: #0f172a;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #94a3b8;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  z-index: 2;
+  letter-spacing: 0.3px;
+}
+
+.yt-learn-vocab-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  vertical-align: top;
+}
+
+.yt-learn-vocab-row:hover {
+  background: rgba(30, 41, 59, 0.5);
+}
+
+.yt-learn-vocab-word {
+  font-weight: 700;
+  font-size: 14.5px;
+  color: #38bdf8;
+  letter-spacing: 0.2px;
+}
+
+.yt-learn-vocab-pron {
+  font-size: 11px;
+  color: #94a3b8;
+  font-style: italic;
+  margin-top: 3px;
+}
+
+.yt-learn-vocab-meaning {
+  font-weight: 500;
+  color: #f1f5f9;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.yt-learn-vocab-context {
+  font-size: 12px;
+  color: #cbd5e1;
+  font-style: italic;
+  line-height: 1.4;
+  background: rgba(30, 41, 59, 0.4);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border-left: 3px solid rgba(56, 189, 248, 0.5);
+}
+
+.yt-learn-timestamp-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #7dd3fc;
+}
+
+.yt-learn-timestamp-btn:hover {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: #38bdf8;
+}
+
+.yt-learn-quick-glance-toast {
+  width: 390px;
+  max-width: 92vw;
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(15, 23, 42, 0.95);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.65);
+}

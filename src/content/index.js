@@ -289,6 +289,7 @@ export class YouTubeLearningAssistantApp {
     this.lastSubtitleResult = null;
     this.isActivityActive = false;
     this.chunkSummaries = new Map();
+    this.vocabulary = [];
     this._isFetchingSecondary = false;
     this._lastSecondaryFetchAttempt = 0;
 
@@ -332,6 +333,13 @@ export class YouTubeLearningAssistantApp {
       onManualTriggerActivity: this.handleManualTriggerActivity.bind(this),
       onTimelineMarkerClick: this.handleTimelineMarkerClick.bind(this),
       onOverrideClassification: this.handleOverrideClassification.bind(this),
+      onSeekToTimestamp: (timestamp) => {
+        if (typeof timestamp === 'number' && !isNaN(timestamp)) {
+          this.log(`[Vocabulary] Seeking video to word timestamp: ${timestamp.toFixed(1)}s`);
+          this.videoController.seekTo(timestamp);
+          this.videoController.play();
+        }
+      },
       onRetryMetadataCheck: () => {
         if (this.currentVideoId) {
           this.log('[Breakpoint] Manual retry metadata check triggered.');
@@ -436,6 +444,7 @@ export class YouTubeLearningAssistantApp {
     this.lastSubtitleResult = null;
     this.isActivityActive = false;
     this.chunkSummaries.clear();
+    this.vocabulary = [];
     this._isFetchingSecondary = false;
     this._lastSecondaryFetchAttempt = 0;
     this._secondaryFetchAttempts = 0;
@@ -446,6 +455,7 @@ export class YouTubeLearningAssistantApp {
     this.uiManager.closeOverlay();
     this.uiManager.clearDualSubtitles();
     this.uiManager.setVideoClassification(null, false);
+    this.uiManager.setVocabulary([]);
     this.syncTimelineMarkers();
 
     if (!videoId) {
@@ -570,7 +580,78 @@ export class YouTubeLearningAssistantApp {
         subtitleResult,
         chapters
       );
+    } else {
+      const fallbackWords = YouTubeLearningAssistantApp.extractFallbackVocabulary(
+        subtitleResult.chunks,
+        this.subtitleManager.cues,
+        chapters
+      );
+      if (fallbackWords.length > 0) {
+        this.vocabulary = fallbackWords;
+        this.uiManager.setVocabulary(fallbackWords, { notify: false });
+      }
     }
+  }
+
+  /**
+   * Lightweight heuristic fallback to extract key vocabulary or chapter concepts
+   * when offline or if Gemini AI planning is bypassed.
+   */
+  static extractFallbackVocabulary(chunks = [], cues = [], chapters = []) {
+    const list = [];
+    const seen = new Set();
+
+    // 1. From chapter titles (often highlight key vocabulary or topics)
+    for (const ch of chapters || []) {
+      let clean = (ch.title || '').replace(/^\d+[\s.:-]+/, '').trim();
+      if (!clean) continue;
+      // Strip generic prefix like "Introduction to ..." to get the core topic
+      clean = clean.replace(/^(intro(duction)?|overview)\s*(to|of)?\s*/i, '').trim() || clean;
+      if (
+        clean.length >= 3 &&
+        !seen.has(clean.toLowerCase()) &&
+        !/^(intro|introduction|outro|conclusion|summary|start|end)$/i.test(clean)
+      ) {
+        seen.add(clean.toLowerCase());
+        list.push({
+          word: clean,
+          meaning: `Key topic or section in video (${clean})`,
+          context: `Chapter marker at ${ch.start}s`,
+          timestamp: ch.start
+        });
+        if (list.length >= 6) break;
+      }
+    }
+
+    // 2. From cues if needed
+    if (list.length < 5 && Array.isArray(cues) && cues.length > 0) {
+      for (const cue of cues) {
+        const text = cue.text || '';
+        const words = text.split(/\s+/);
+        for (const rawW of words) {
+          const w = rawW.replace(/^[^\w\u00C0-\u024F]+|[^\w\u00C0-\u024F]+$/g, '');
+          if (w.length >= 5 && /^[A-Z\u00C0-\u024F]/.test(w)) {
+            const lower = w.toLowerCase();
+            if (
+              !seen.has(lower) &&
+              !['there', 'where', 'which', 'about', 'these', 'those', 'after', 'before', 'today'].includes(lower)
+            ) {
+              seen.add(lower);
+              list.push({
+                word: w,
+                meaning: `Notable term mentioned in video`,
+                context: text,
+                timestamp: cue.start
+              });
+              if (list.length >= 8) break;
+            }
+          }
+        }
+        if (list.length >= 8) break;
+      }
+    }
+
+    return list;
   }
 
   /**
@@ -587,7 +668,7 @@ export class YouTubeLearningAssistantApp {
 
       const videoDuration = this.getEffectiveDuration();
       const promptSpec = PromptBuilder.buildVideoBreakpointsAndActivitiesPrompt({
-        videoTitle: this.videoMetadata.title || '',
+        videoTitle: this.videoMetadata?.title || '',
         videoDuration,
         chapters,
         transcriptCues: this.subtitleManager.cues || [],
@@ -611,22 +692,45 @@ export class YouTubeLearningAssistantApp {
 
       if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
 
-      if (res && res.ok && res.data && Array.isArray(res.data.breakpoints) && res.data.breakpoints.length > 0) {
-        this.log(
-          `[Breakpoint] Gemini AI planned ${res.data.breakpoints.length} checkpoints and questions for video!`
-        );
-        this.breakpointDetector.setBreakpointsFromAi(res.data.breakpoints, videoId);
-        this.syncTimelineMarkers();
+      if (res && res.ok && res.data) {
+        const rawWords = res.data.newWords || res.data.vocabulary;
+        if (Array.isArray(rawWords) && rawWords.length > 0) {
+          this.vocabulary = rawWords;
+          this.uiManager.setVocabulary(rawWords);
+          this.log(`[Vocabulary] Loaded ${rawWords.length} new words in original language from Gemini.`);
+        }
 
-        const count = this.breakpointDetector.getAllScheduledBreakpoints().length;
-        this.uiManager.setStatus(`Active (${count} AI checkpoints)`, 'ready');
-        return;
+        if (Array.isArray(res.data.breakpoints) && res.data.breakpoints.length > 0) {
+          this.log(
+            `[Breakpoint] Gemini AI planned ${res.data.breakpoints.length} checkpoints and questions for video!`
+          );
+          this.breakpointDetector.setBreakpointsFromAi(res.data.breakpoints, videoId);
+          this.syncTimelineMarkers();
+
+          const count = this.breakpointDetector.getAllScheduledBreakpoints().length;
+          this.uiManager.setStatus(`Active (${count} AI checkpoints)`, 'ready');
+          return;
+        }
       }
     } catch (err) {
       this.log(`[Breakpoint] Gemini AI planning fallback (${err.message}). Using seeded checkpoints.`);
     }
 
     if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+
+    if (this.vocabulary.length === 0 && (subtitleResult.chunks?.length > 0 || this.subtitleManager.cues?.length > 0)) {
+      const fallbackWords = YouTubeLearningAssistantApp.extractFallbackVocabulary(
+        subtitleResult.chunks,
+        this.subtitleManager.cues,
+        chapters
+      );
+      if (fallbackWords.length > 0) {
+        this.vocabulary = fallbackWords;
+        this.uiManager.setVocabulary(fallbackWords, { notify: false });
+        this.log(`[Vocabulary] Seeded ${fallbackWords.length} fallback vocabulary terms from video cues/chapters.`);
+      }
+    }
+
     const totalScheduled = this.breakpointDetector.getAllScheduledBreakpoints().length;
     this.uiManager.setStatus(`Active (${totalScheduled} breakpoints)`, 'ready');
   }
