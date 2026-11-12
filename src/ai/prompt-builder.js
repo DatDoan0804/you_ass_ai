@@ -955,15 +955,15 @@ CRITICAL INSTRUCTIONS — ULTRA-CASUAL, NATURAL & DIRECTLY TIED TO THE VIDEO:
    - If the video transcript is in Vietnamese (or another non-English language), generate the questions and options in that language using a friendly, natural, casual tone.
    - Otherwise, use simple, friendly, everyday English.
 8. TABLE OF NEW WORDS IN ORIGINAL LANGUAGE (INDEPENDENT FROM BREAKPOINTS):
-   - You MUST extract a curated table of 5 to 15 key words, unfamiliar vocabulary, technical terms, or idioms in the "newWords" array.
+   - Extract 5 to 8 high-value items in the "newWords" array. Prefer useful phrases, idioms, and subject-specific terms a learner may need to understand this video; skip everyday words, names, and broad chapter topics.
    - Every word MUST be in the ORIGINAL LANGUAGE of the video transcript (e.g. if the video is in French, Spanish, Japanese, Vietnamese, etc., the word is written in that original language; if in English, choose specialized, technical, or notable vocabulary).
    - For each word, include:
-     * "word": The word or expression in the original language of the video transcript.
+     * "word": Copy the word or expression exactly as it appears in the original-language transcript. Do not invent or normalize it.
      * "pronunciation": (Optional) Phonetic guide or reading if applicable (e.g., IPA, pinyin, hiragana/romaji).
      * "meaning": Concise, plain explanation or translation in friendly everyday language.
-     * "context": Short snippet or sentence from the transcript showing where and how it was used in context.
-     * "timestamp": The approximate cue timestamp (in seconds) where it appears in the video.
-   - This table allows the viewer to take a quick glance at key vocabulary before diving into the video, completely independent from playback breakpoints.
+     * "context": A short, exact transcript excerpt containing the word, with enough surrounding text to show its meaning. Never fabricate an example.
+     * "timestamp": The timestamp in seconds of a transcript cue that contains this exact word or phrase. If no matching cue is available, omit the timestamp.
+   - Choose items that make the upcoming video easier to follow, not an exhaustive vocabulary list. The viewer will practice each card by recalling its meaning before revealing the explanation. This vocabulary prep is independent from playback breakpoints.
 9. GROUNDING: Everything must be strictly grounded in what actually happens in the video transcript.
 
 Output a valid JSON object matching the schema.`;

@@ -179,13 +179,21 @@ export class UIManager {
   }
 
   setVocabulary(words = [], options = {}) {
-    this.vocabulary = Array.isArray(words) ? words : [];
+    const incoming = Array.isArray(words) ? words : [];
+    const localEdits = this.activePanel === 'vocabulary' && Array.isArray(this.vocabulary)
+      ? this.vocabulary
+      : [];
+    const seen = new Set();
+    this.vocabulary = [...localEdits, ...incoming].filter((item) => {
+      const key = String(item?.word || '').trim().toLocaleLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     this.renderDedicatedBar();
 
     if (this.activePanel === 'vocabulary') {
       this.showVocabularyDrawer();
-    } else if (this.vocabulary.length > 0 && options.notify !== false) {
-      this.showQuickGlanceToast(this.vocabulary);
     }
   }
 
@@ -255,7 +263,7 @@ export class UIManager {
             </select>
           ` : ''}
         </div>
-        <button class="yt-learn-icon-btn yt-learn-vocab-btn ${this.vocabulary.length > 0 ? 'active-vocab' : ''}" id="yt-learn-vocab-btn" title="Quick glance at new words & key vocabulary in original language (independent of breakpoints)">📖 Words${this.vocabulary.length > 0 ? ` <strong>(${this.vocabulary.length})</strong>` : ''}</button>
+        <button class="yt-learn-icon-btn yt-learn-vocab-btn ${this.vocabulary.length > 0 ? 'active-vocab' : ''}" id="yt-learn-vocab-btn" title="Practice the video's vocabulary before watching">📖 Prep vocab${this.vocabulary.length > 0 ? ` <strong>(${this.vocabulary.length})</strong>` : ''}</button>
         <button class="yt-learn-icon-btn" id="yt-learn-now-btn" title="Generate activity for current section now">⚡ Quiz Now</button>
         <button class="yt-learn-icon-btn" id="yt-learn-dashboard-btn" title="Learning Profile & Activity History">📊 Progress</button>
         <button class="yt-learn-icon-btn" id="yt-learn-settings-btn" title="Assistant Settings & API Key">⚙️ Settings</button>
@@ -1654,242 +1662,147 @@ export class UIManager {
     wrapper.querySelector('#yt-learn-dash-close')?.addEventListener('click', () => this.closeOverlay());
   }
 
-  showQuickGlanceToast(words = []) {
-    if (!Array.isArray(words) || words.length === 0) return;
-    if (this.activePanel !== null) return;
-    if (typeof document === 'undefined') return;
-    this.ensureOverlayHost();
-    if (!this.rootContainer) return;
-
-    const existing = this.rootContainer.querySelector?.('.yt-learn-quick-glance-toast');
-    if (existing && typeof existing.remove === 'function') {
-      existing.remove();
-    }
-
-    const toast = document.createElement('div');
-    toast.className = 'yt-learn-toast yt-learn-quick-glance-toast';
-    toast.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span style="font-size:18px;">📖</span>
-          <div>
-            <div style="font-weight:700;font-size:13px;color:#f1f5f9;">
-              ${words.length} New Words in Original Language
-            </div>
-            <div style="font-size:11.5px;color:#94a3b8;">
-              Quick glance before diving into the video.
-            </div>
-          </div>
-        </div>
-        <div style="display:flex;gap:6px;align-items:center;">
-          <button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-quick-glance-btn" style="font-size:11.5px;padding:4px 10px;white-space:nowrap;">
-            Quick Glance
-          </button>
-          <button class="yt-learn-btn-ghost" id="yt-learn-quick-glance-close" style="border:none;cursor:pointer;color:#94a3b8;font-size:14px;padding:4px 6px;">✕</button>
-        </div>
-      </div>
-    `;
-
-    this.rootContainer.appendChild(toast);
-
-    const dismiss = () => {
-      if (toast && typeof toast.remove === 'function') {
-        toast.remove();
-      }
-    };
-
-    toast.querySelector?.('#yt-learn-quick-glance-close')?.addEventListener('click', dismiss);
-    toast.querySelector?.('#yt-learn-quick-glance-btn')?.addEventListener('click', () => {
-      dismiss();
-      this.showVocabularyDrawer();
-    });
-
-    setTimeout(dismiss, 12000);
-  }
-
   showVocabularyDrawer() {
     if (typeof document === 'undefined') return;
     this.ensureOverlayHost();
     this.activePanel = 'vocabulary';
-    if (this.rootContainer) {
-      this.rootContainer.innerHTML = '';
-    }
+    if (this.rootContainer) this.rootContainer.innerHTML = '';
 
     const wrapper = document.createElement('div');
     wrapper.className = 'yt-learn-overlay-backdrop yt-learn-vocab-backdrop';
+    const cleanWords = (Array.isArray(this.vocabulary) ? this.vocabulary : [])
+      .filter((item) => item && typeof item.word === 'string' && item.word.trim())
+      .map((item) => ({
+        word: item.word.trim(),
+        pronunciation: typeof item.pronunciation === 'string' ? item.pronunciation.trim() : '',
+        meaning: typeof item.meaning === 'string' ? item.meaning.trim() : '',
+        context: typeof item.context === 'string' ? item.context.trim() : '',
+        timestamp: item.timestamp !== null && item.timestamp !== '' && Number.isFinite(Number(item.timestamp)) ? Number(item.timestamp) : null
+      }));
 
-    const words = Array.isArray(this.vocabulary) ? this.vocabulary : [];
-    const isPreparing = this.statusState === 'preparing';
+    const prep = {
+      queue: cleanWords.map((_, index) => index),
+      position: 0,
+      review: [],
+      known: 0,
+      revealed: false,
+      round: 1
+    };
+    this.vocabPrep = prep;
 
-    let contentHtml = '';
-    if (words.length === 0) {
-      if (isPreparing) {
-        contentHtml = `
-          <div style="text-align:center;padding:36px 20px;color:#94a3b8;">
-            <div style="font-size:24px;margin-bottom:8px;">⏳</div>
-            <div style="font-weight:600;font-size:14px;color:#f1f5f9;">Analyzing Transcript for New Words...</div>
-            <div style="font-size:12.5px;margin-top:6px;">Gemini is compiling a table of new vocabulary in the original language. It will appear here shortly so you can take a quick glance before diving into the video.</div>
-          </div>
-        `;
+    const render = () => {
+      const complete = prep.position >= prep.queue.length;
+      const currentIndex = complete ? -1 : prep.queue[prep.position];
+      const item = currentIndex >= 0 ? cleanWords[currentIndex] : null;
+      const preparing = this.statusState === 'preparing';
+      let body = '';
+
+      if (!item && !complete) {
+        body = preparing
+          ? `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">⏳</div><h4>Getting your word cards ready</h4><p>They’ll appear here when the video analysis finishes.</p></div>`
+          : `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">📖</div><h4>No word cards yet</h4><p>Add words you want to learn. Include a meaning so you can test yourself before watching.</p>
+            <form id="yt-learn-vocab-add-form" class="yt-learn-vocab-add-form">
+              <input name="word" required maxlength="100" placeholder="Word or phrase" aria-label="Word or phrase" />
+              <input name="meaning" required maxlength="240" placeholder="Meaning / translation" aria-label="Meaning or translation" />
+              <input name="context" maxlength="300" placeholder="Example from the video (optional)" aria-label="Example from the video" />
+              <button class="yt-learn-btn yt-learn-btn-primary" type="submit">Add first card</button>
+            </form></div>`;
+      } else if (complete) {
+        const hasReview = prep.review.length > 0;
+        body = `<div class="yt-learn-vocab-complete">
+          <div class="yt-learn-vocab-empty-icon">${hasReview ? '🔁' : '✅'}</div>
+          <h4>${hasReview ? 'Good first pass.' : 'Ready for the video.'}</h4>
+          <p>${prep.known} ${prep.known === 1 ? 'word' : 'words'} marked “Got it”${hasReview ? ` · ${prep.review.length} to practice again` : ''}</p>
+          ${hasReview ? '<button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-vocab-review">Practice missed words</button>' : '<p class="yt-learn-vocab-hint">You can reopen Prep vocab any time while watching.</p>'}
+        </div>`;
       } else {
-        contentHtml = `
-          <div style="text-align:center;padding:36px 20px;color:#94a3b8;">
-            <div style="font-size:24px;margin-bottom:8px;">📖</div>
-            <div style="font-weight:600;font-size:14px;color:#f1f5f9;">No New Words Available Yet</div>
-            <div style="font-size:12.5px;margin-top:6px;">Ensure the video has captions/subtitles loaded so Gemini can extract the vocabulary.</div>
-          </div>
-        `;
+        const shown = prep.position + 1;
+        const total = prep.queue.length;
+        const progress = total ? Math.round((prep.position / total) * 100) : 0;
+        body = `<div class="yt-learn-vocab-progress-label"><span>Card ${shown} of ${total}</span><span>${prep.known} got it</span></div>
+          <div class="yt-learn-vocab-progress"><span style="width:${progress}%"></span></div>
+          <article class="yt-learn-vocab-flashcard">
+            <div class="yt-learn-vocab-card-kicker">${prep.round > 1 ? 'PRACTICE ROUND' : 'BEFORE YOU WATCH'}</div>
+            <div class="yt-learn-vocab-card-word">${this.escapeHtml(item.word)}</div>
+            ${item.pronunciation ? `<div class="yt-learn-vocab-pron">${this.escapeHtml(item.pronunciation)}</div>` : ''}
+            ${prep.revealed ? `<div class="yt-learn-vocab-answer">
+              <div class="yt-learn-vocab-meaning">${this.escapeHtml(item.meaning || 'Add a meaning to make this card easier to study.')}</div>
+              ${item.context ? `<blockquote>${this.escapeHtml(item.context)}</blockquote>` : ''}
+              ${item.timestamp !== null ? `<button class="yt-learn-timestamp-btn" id="yt-learn-vocab-jump" type="button">▶ Hear it in the video · ${UIManager.formatTimestamp(item.timestamp)}</button>` : ''}
+            </div>` : '<p class="yt-learn-vocab-prompt">Think of the meaning, then reveal the answer.</p>'}
+          </article>
+          ${prep.revealed
+            ? '<div class="yt-learn-vocab-actions"><button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-vocab-again">Practice again</button><button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-vocab-got-it">Got it</button></div>'
+            : '<button class="yt-learn-btn yt-learn-btn-primary yt-learn-vocab-reveal" id="yt-learn-vocab-reveal">Reveal meaning</button>'}
+          <div class="yt-learn-vocab-secondary-actions"><button class="yt-learn-btn-ghost" id="yt-learn-vocab-edit-toggle">✎ Fix this card</button></div>
+          <form id="yt-learn-vocab-edit-form" class="yt-learn-vocab-add-form is-hidden">
+            <input name="word" required maxlength="100" value="${this.escapeHtml(item.word)}" aria-label="Word or phrase" />
+            <input name="meaning" required maxlength="240" value="${this.escapeHtml(item.meaning)}" placeholder="Meaning / translation" aria-label="Meaning or translation" />
+            <input name="context" maxlength="300" value="${this.escapeHtml(item.context)}" placeholder="Example (optional)" aria-label="Example" />
+            <button class="yt-learn-btn yt-learn-btn-secondary" type="submit">Save correction</button>
+          </form>
+          <div class="yt-learn-vocab-secondary-actions"><button class="yt-learn-btn-ghost" id="yt-learn-vocab-add-toggle">＋ Add your own word</button></div>
+          <form id="yt-learn-vocab-add-form" class="yt-learn-vocab-add-form is-hidden">
+            <input name="word" required maxlength="100" placeholder="Word or phrase" aria-label="Word or phrase" />
+            <input name="meaning" required maxlength="240" placeholder="Meaning / translation" aria-label="Meaning or translation" />
+            <input name="context" maxlength="300" placeholder="Example (optional)" aria-label="Example" />
+            <button class="yt-learn-btn yt-learn-btn-secondary" type="submit">Add card</button>
+          </form>`;
       }
-    } else {
-      const renderWordRows = (items) => items.map((w, index) => `
-        <tr class="yt-learn-vocab-row" data-index="${index}">
-          <td class="yt-learn-vocab-col-word">
-            <div class="yt-learn-vocab-word">${this.escapeHtml(w.word || '')}</div>
-            ${w.pronunciation ? `<div class="yt-learn-vocab-pron">[${this.escapeHtml(w.pronunciation)}]</div>` : ''}
-          </td>
-          <td class="yt-learn-vocab-col-meaning">
-            <div class="yt-learn-vocab-meaning">${this.escapeHtml(w.meaning || '')}</div>
-          </td>
-          <td class="yt-learn-vocab-col-context">
-            ${w.context ? `<div class="yt-learn-vocab-context">"${this.escapeHtml(w.context)}"</div>` : '<span style="color:#64748b;">—</span>'}
-          </td>
-          <td class="yt-learn-vocab-col-action">
-            ${typeof w.timestamp === 'number' && !isNaN(w.timestamp) ? `
-              <button class="yt-learn-btn yt-learn-btn-secondary yt-learn-timestamp-btn" data-time="${w.timestamp}" title="Jump to ${UIManager.formatTimestamp(w.timestamp)} in video">
-                ⏱️ ${UIManager.formatTimestamp(w.timestamp)}
-              </button>
-            ` : '<span style="color:#64748b;">—</span>'}
-          </td>
-        </tr>
-      `).join('');
 
-      contentHtml = `
-        <div class="yt-learn-vocab-toolbar">
-          <input type="text" id="yt-learn-vocab-filter" class="yt-learn-vocab-search" placeholder="🔍 Filter words, meanings, or context..." />
-          <div style="font-size:12px;color:#94a3b8;white-space:nowrap;">
-            Showing <strong id="yt-learn-vocab-visible-count" style="color:#38bdf8;">${words.length}</strong> of ${words.length}
-          </div>
-        </div>
-        <div class="yt-learn-vocab-table-container">
-          <table class="yt-learn-vocab-table">
-            <thead>
-              <tr>
-                <th style="width:24%;">Word (Original)</th>
-                <th style="width:34%;">Meaning / Translation</th>
-                <th style="width:30%;">Context in Video</th>
-                <th style="width:12%;text-align:center;">Jump</th>
-              </tr>
-            </thead>
-            <tbody id="yt-learn-vocab-tbody">
-              ${renderWordRows(words)}
-            </tbody>
-          </table>
-        </div>
-      `;
-    }
+      wrapper.innerHTML = `<div class="yt-learn-card yt-learn-vocab-card yt-learn-vocab-study">
+        <div class="yt-learn-card-header"><div><h3 class="yt-learn-concept-title" style="font-size:16px;">📖 Prep the video vocabulary</h3><div class="yt-learn-vocab-subtitle">Recall each meaning before you reveal it</div></div><button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-vocab-close" aria-label="Close">✕</button></div>
+        <div class="yt-learn-card-body">${body}</div>
+        <div class="yt-learn-card-footer"><span>Short recall practice · your answers stay on this page</span><button class="yt-learn-btn-ghost" id="yt-learn-vocab-finish">Done</button></div>
+      </div>`;
 
-    wrapper.innerHTML = `
-      <div class="yt-learn-card yt-learn-vocab-card">
-        <div class="yt-learn-card-header">
-          <div>
-            <div style="display:flex;align-items:center;gap:8px;">
-              <h3 class="yt-learn-concept-title" style="font-size:16px;">📖 New Words & Key Vocabulary</h3>
-              <span class="yt-learn-badge" style="background:rgba(56,189,248,0.18);color:#7dd3fc;border-color:rgba(56,189,248,0.35);">
-                Original Language
-              </span>
-            </div>
-            <div style="font-size:12px;color:#94a3b8;margin-top:2px;">
-              Quick glance before diving into the video • Independent from breakpoints
-            </div>
-          </div>
-          <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-vocab-close" title="Close">✕</button>
-        </div>
-
-        <div class="yt-learn-card-body" style="padding:14px 18px;max-height:68vh;overflow-y:auto;">
-          ${contentHtml}
-        </div>
-
-        <div class="yt-learn-card-footer" style="display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-top:1px solid rgba(148,163,184,0.15);font-size:12px;color:#94a3b8;">
-          <div>💡 <em>Click any timestamp to jump directly to where the word is spoken in the video.</em></div>
-          <div style="display:flex;gap:8px;">
-            ${words.length > 0 ? `<button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-vocab-copy" style="font-size:12px;padding:6px 12px;">📋 Copy List</button>` : ''}
-            <button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-vocab-done" style="font-size:12px;padding:6px 14px;">Done</button>
-          </div>
-        </div>
-      </div>
-    `;
-
-    if (this.rootContainer) {
-      this.rootContainer.appendChild(wrapper);
-    }
-
-    // Event listeners
-    wrapper.querySelector?.('#yt-learn-vocab-close')?.addEventListener('click', () => this.closeOverlay());
-    wrapper.querySelector?.('#yt-learn-vocab-done')?.addEventListener('click', () => this.closeOverlay());
-
-    // Timestamp seek buttons
-    wrapper.querySelectorAll?.('.yt-learn-timestamp-btn')?.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const time = parseFloat(btn.dataset.time);
-        if (!isNaN(time) && typeof this.callbacks.onSeekToTimestamp === 'function') {
-          this.callbacks.onSeekToTimestamp(time);
-        }
+      wrapper.querySelector('#yt-learn-vocab-close')?.addEventListener('click', () => this.closeOverlay());
+      wrapper.querySelector('#yt-learn-vocab-finish')?.addEventListener('click', () => this.closeOverlay());
+      wrapper.querySelector('#yt-learn-vocab-reveal')?.addEventListener('click', () => { prep.revealed = true; render(); });
+      wrapper.querySelector('#yt-learn-vocab-got-it')?.addEventListener('click', () => { prep.known++; prep.position++; prep.revealed = false; render(); });
+      wrapper.querySelector('#yt-learn-vocab-again')?.addEventListener('click', () => { prep.review.push(currentIndex); prep.position++; prep.revealed = false; render(); });
+      wrapper.querySelector('#yt-learn-vocab-review')?.addEventListener('click', () => { prep.queue = prep.review.slice(); prep.review = []; prep.position = 0; prep.round++; prep.revealed = false; render(); });
+      wrapper.querySelector('#yt-learn-vocab-jump')?.addEventListener('click', () => {
+        if (typeof this.callbacks.onSeekToTimestamp === 'function') this.callbacks.onSeekToTimestamp(item.timestamp);
       });
-    });
-
-    // Filter input
-    const filterInput = wrapper.querySelector?.('#yt-learn-vocab-filter');
-    const tbody = wrapper.querySelector?.('#yt-learn-vocab-tbody');
-    const visibleCountEl = wrapper.querySelector?.('#yt-learn-vocab-visible-count');
-
-    if (filterInput && tbody) {
-      filterInput.addEventListener('input', () => {
-        const query = filterInput.value.trim().toLowerCase();
-        const rows = tbody.querySelectorAll?.('.yt-learn-vocab-row') || [];
-        let visibleCount = 0;
-
-        rows.forEach((row) => {
-          const idx = parseInt(row.dataset.index, 10);
-          const item = words[idx];
-          if (!item) return;
-
-          const match =
-            !query ||
-            (item.word && item.word.toLowerCase().includes(query)) ||
-            (item.meaning && item.meaning.toLowerCase().includes(query)) ||
-            (item.context && item.context.toLowerCase().includes(query)) ||
-            (item.pronunciation && item.pronunciation.toLowerCase().includes(query));
-
-          if (match) {
-            row.style.display = '';
-            visibleCount++;
-          } else {
-            row.style.display = 'none';
-          }
-        });
-
-        if (visibleCountEl) {
-          visibleCountEl.textContent = String(visibleCount);
-        }
+      wrapper.querySelector('#yt-learn-vocab-edit-toggle')?.addEventListener('click', () => {
+        wrapper.querySelector('#yt-learn-vocab-edit-form')?.classList.toggle('is-hidden');
       });
-    }
+      wrapper.querySelector('#yt-learn-vocab-edit-form')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const formData = new FormData(form);
+        const word = String(formData.get('word') || '').trim();
+        const meaning = String(formData.get('meaning') || '').trim();
+        if (!word || !meaning) return;
+        cleanWords[currentIndex] = { ...item, word, meaning, context: String(formData.get('context') || '').trim() };
+        this.vocabulary = cleanWords;
+        render();
+      });
+      wrapper.querySelector('#yt-learn-vocab-add-toggle')?.addEventListener('click', (event) => {
+        const form = wrapper.querySelector('#yt-learn-vocab-add-form');
+        form?.classList.toggle('is-hidden');
+        if (!form?.classList.contains('is-hidden')) form?.querySelector('input[name="word"]')?.focus();
+        event.currentTarget?.setAttribute('aria-expanded', String(!form?.classList.contains('is-hidden')));
+      });
+      wrapper.querySelector('#yt-learn-vocab-add-form')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const formData = new FormData(form);
+        const word = String(formData.get('word') || '').trim();
+        const meaning = String(formData.get('meaning') || '').trim();
+        if (!word || !meaning) return;
+        cleanWords.push({ word, meaning, context: String(formData.get('context') || '').trim(), pronunciation: '', timestamp: null });
+        this.vocabulary = cleanWords;
+        prep.queue.push(cleanWords.length - 1);
+        form.reset();
+        if (prep.position >= prep.queue.length - 1) prep.position = prep.queue.length - 1;
+        render();
+      });
+    };
 
-    // Copy list button
-    wrapper.querySelector?.('#yt-learn-vocab-copy')?.addEventListener('click', (e) => {
-      const textToCopy = words
-        .map((w) => `${w.word}${w.pronunciation ? ` [${w.pronunciation}]` : ''} - ${w.meaning}${w.context ? ` ("${w.context}")` : ''}`)
-        .join('\n');
-      if (typeof navigator !== 'undefined' && navigator.clipboard) {
-        navigator.clipboard.writeText(textToCopy).catch(() => {});
-      }
-      const copyBtn = e.target;
-      if (copyBtn) {
-        copyBtn.textContent = '✓ Copied!';
-        setTimeout(() => {
-          if (copyBtn.isConnected) copyBtn.textContent = '📋 Copy List';
-        }, 1500);
-      }
-    });
+    if (this.rootContainer) this.rootContainer.appendChild(wrapper);
+    render();
   }
 
   closeOverlay() {

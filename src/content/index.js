@@ -580,78 +580,7 @@ export class YouTubeLearningAssistantApp {
         subtitleResult,
         chapters
       );
-    } else {
-      const fallbackWords = YouTubeLearningAssistantApp.extractFallbackVocabulary(
-        subtitleResult.chunks,
-        this.subtitleManager.cues,
-        chapters
-      );
-      if (fallbackWords.length > 0) {
-        this.vocabulary = fallbackWords;
-        this.uiManager.setVocabulary(fallbackWords, { notify: false });
-      }
     }
-  }
-
-  /**
-   * Lightweight heuristic fallback to extract key vocabulary or chapter concepts
-   * when offline or if Gemini AI planning is bypassed.
-   */
-  static extractFallbackVocabulary(chunks = [], cues = [], chapters = []) {
-    const list = [];
-    const seen = new Set();
-
-    // 1. From chapter titles (often highlight key vocabulary or topics)
-    for (const ch of chapters || []) {
-      let clean = (ch.title || '').replace(/^\d+[\s.:-]+/, '').trim();
-      if (!clean) continue;
-      // Strip generic prefix like "Introduction to ..." to get the core topic
-      clean = clean.replace(/^(intro(duction)?|overview)\s*(to|of)?\s*/i, '').trim() || clean;
-      if (
-        clean.length >= 3 &&
-        !seen.has(clean.toLowerCase()) &&
-        !/^(intro|introduction|outro|conclusion|summary|start|end)$/i.test(clean)
-      ) {
-        seen.add(clean.toLowerCase());
-        list.push({
-          word: clean,
-          meaning: `Key topic or section in video (${clean})`,
-          context: `Chapter marker at ${ch.start}s`,
-          timestamp: ch.start
-        });
-        if (list.length >= 6) break;
-      }
-    }
-
-    // 2. From cues if needed
-    if (list.length < 5 && Array.isArray(cues) && cues.length > 0) {
-      for (const cue of cues) {
-        const text = cue.text || '';
-        const words = text.split(/\s+/);
-        for (const rawW of words) {
-          const w = rawW.replace(/^[^\w\u00C0-\u024F]+|[^\w\u00C0-\u024F]+$/g, '');
-          if (w.length >= 5 && /^[A-Z\u00C0-\u024F]/.test(w)) {
-            const lower = w.toLowerCase();
-            if (
-              !seen.has(lower) &&
-              !['there', 'where', 'which', 'about', 'these', 'those', 'after', 'before', 'today'].includes(lower)
-            ) {
-              seen.add(lower);
-              list.push({
-                word: w,
-                meaning: `Notable term mentioned in video`,
-                context: text,
-                timestamp: cue.start
-              });
-              if (list.length >= 8) break;
-            }
-          }
-        }
-        if (list.length >= 8) break;
-      }
-    }
-
-    return list;
   }
 
   /**
@@ -664,7 +593,7 @@ export class YouTubeLearningAssistantApp {
     if (this.settings.enabled === false) return;
 
     try {
-      this.uiManager.setStatus('AI Planning Breakpoints & Questions...', 'preparing');
+      this.uiManager.setStatus('Preparing words and video check-ins...', 'preparing');
 
       const videoDuration = this.getEffectiveDuration();
       const promptSpec = PromptBuilder.buildVideoBreakpointsAndActivitiesPrompt({
@@ -717,19 +646,6 @@ export class YouTubeLearningAssistantApp {
     }
 
     if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
-
-    if (this.vocabulary.length === 0 && (subtitleResult.chunks?.length > 0 || this.subtitleManager.cues?.length > 0)) {
-      const fallbackWords = YouTubeLearningAssistantApp.extractFallbackVocabulary(
-        subtitleResult.chunks,
-        this.subtitleManager.cues,
-        chapters
-      );
-      if (fallbackWords.length > 0) {
-        this.vocabulary = fallbackWords;
-        this.uiManager.setVocabulary(fallbackWords, { notify: false });
-        this.log(`[Vocabulary] Seeded ${fallbackWords.length} fallback vocabulary terms from video cues/chapters.`);
-      }
-    }
 
     const totalScheduled = this.breakpointDetector.getAllScheduledBreakpoints().length;
     this.uiManager.setStatus(`Active (${totalScheduled} breakpoints)`, 'ready');
