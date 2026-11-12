@@ -1213,6 +1213,8 @@
 .yt-learn-vocab-answer { width:100%; margin-top:20px; padding-top:16px; border-top:1px solid rgba(148,163,184,.16); }
 .yt-learn-vocab-meaning { color:#f1f5f9; font-size:19px; font-weight:600; line-height:1.45; }
 .yt-learn-vocab-answer blockquote { margin:12px auto 0; max-width:470px; padding:9px 12px; border-left:3px solid #38bdf8; border-radius:4px; background:rgba(30,41,59,.55); color:#cbd5e1; text-align:left; font-size:13px; }
+.yt-learn-vocab-explanation { color:#cbd5e1; font-size:14px; line-height:1.5; margin-top:8px; }
+.yt-learn-vocab-context-meaning { color:#7dd3fc; font-size:13px; line-height:1.5; margin-top:8px; }
 .yt-learn-vocab-actions { display:flex; gap:10px; justify-content:center; margin-top:16px; }
 .yt-learn-vocab-actions button { min-width:145px; }
 .yt-learn-vocab-reveal { display:block; margin:16px auto 0; min-width:190px; }

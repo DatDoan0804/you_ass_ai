@@ -60,6 +60,9 @@ export class UIManager {
     this.userClassificationOverride = null;
     this.localServerConnected = false;
     this.vocabulary = [];
+    this.vocabularyState = 'empty';
+    this.vocabularyMessage = '';
+    this.vocabularyPrepGate = false;
 
     this.cachedBreakpoints = [];
     this.cachedTriggeredIds = new Set();
@@ -190,11 +193,29 @@ export class UIManager {
       seen.add(key);
       return true;
     });
+    if (incoming.length > 0) {
+      this.vocabularyState = 'ready';
+      this.vocabularyMessage = '';
+    } else if (localEdits.length === 0) {
+      this.vocabularyState = 'empty';
+      this.vocabularyMessage = '';
+    }
     this.renderDedicatedBar();
 
     if (this.activePanel === 'vocabulary') {
       this.showVocabularyDrawer();
     }
+  }
+
+  setVocabularyStatus(state, message = '') {
+    this.vocabularyState = state;
+    this.vocabularyMessage = message;
+    if (this.activePanel === 'vocabulary') this.showVocabularyDrawer();
+  }
+
+  setVocabularyPrepGate(active) {
+    this.vocabularyPrepGate = Boolean(active);
+    if (this.activePanel === 'vocabulary') this.showVocabularyDrawer();
   }
 
   renderDedicatedBar() {
@@ -329,7 +350,7 @@ export class UIManager {
 
     this.barContainer.querySelector('#yt-learn-vocab-btn')?.addEventListener('click', () => {
       if (this.activePanel === 'vocabulary') {
-        this.closeOverlay();
+        if (!this.vocabularyPrepGate) this.closeOverlay();
       } else {
         this.showVocabularyDrawer();
       }
@@ -1473,6 +1494,24 @@ export class UIManager {
             <input type="text" class="yt-learn-input" id="yt-set-model" value="${this.escapeHtml(s.model || 'gemini-3.8-flash')}" />
           </div>
 
+          <div style="margin: 14px 0 8px; font-weight: 700; font-size: 13px; color: #38bdf8; border-top: 1px solid rgba(148, 163, 184, 0.2); padding-top: 12px;">📖 Pre-video vocabulary</div>
+          <div class="yt-learn-checkbox-row">
+            <span>Pause new videos for vocabulary prep</span>
+            <input type="checkbox" id="yt-set-vocab-prep" ${s.enableVocabularyPrep !== false ? 'checked' : ''} />
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="yt-learn-form-group">
+              <label>Your language for translations</label>
+              <input type="text" class="yt-learn-input" id="yt-set-vocab-translation" maxlength="40" placeholder="e.g. Vietnamese" value="${this.escapeHtml(s.vocabularyTranslationLanguage || 'English')}" />
+            </div>
+            <div class="yt-learn-form-group">
+              <label>Your vocabulary level</label>
+              <select class="yt-learn-select" id="yt-set-vocab-level">
+                ${['A1','A2','B1','B2','C1','C2'].map((level) => `<option value="${level}" ${(s.vocabularyLevel || 'B1') === level ? 'selected' : ''}>${level}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+
           <div class="yt-learn-form-group">
             <label>Break Frequency Preset</label>
             <select class="yt-learn-select" id="yt-set-freq">
@@ -1566,6 +1605,9 @@ export class UIManager {
         provider: wrapper.querySelector('#yt-set-provider').value,
         apiKey: wrapper.querySelector('#yt-set-apikey').value.trim(),
         model: wrapper.querySelector('#yt-set-model').value.trim() || 'gemini-3.8-flash',
+        enableVocabularyPrep: wrapper.querySelector('#yt-set-vocab-prep').checked,
+        vocabularyTranslationLanguage: wrapper.querySelector('#yt-set-vocab-translation').value.trim() || 'English',
+        vocabularyLevel: wrapper.querySelector('#yt-set-vocab-level').value,
         breakFrequency: wrapper.querySelector('#yt-set-freq').value,
         minIntervalSeconds: Math.max(60, Number(wrapper.querySelector('#yt-set-min').value) || 300),
         maxIntervalSeconds: Math.max(120, Number(wrapper.querySelector('#yt-set-max').value) || 600),
@@ -1675,7 +1717,11 @@ export class UIManager {
       .map((item) => ({
         word: item.word.trim(),
         pronunciation: typeof item.pronunciation === 'string' ? item.pronunciation.trim() : '',
+        translation: typeof item.translation === 'string' ? item.translation.trim() : '',
         meaning: typeof item.meaning === 'string' ? item.meaning.trim() : '',
+        explanation: typeof item.explanation === 'string' ? item.explanation.trim() : '',
+        contextualMeaning: typeof item.contextualMeaning === 'string' ? item.contextualMeaning.trim() : '',
+        example: typeof item.example === 'string' ? item.example.trim() : '',
         context: typeof item.context === 'string' ? item.context.trim() : '',
         timestamp: item.timestamp !== null && item.timestamp !== '' && Number.isFinite(Number(item.timestamp)) ? Number(item.timestamp) : null
       }));
@@ -1694,16 +1740,17 @@ export class UIManager {
       const complete = prep.position >= prep.queue.length;
       const currentIndex = complete ? -1 : prep.queue[prep.position];
       const item = currentIndex >= 0 ? cleanWords[currentIndex] : null;
-      const preparing = this.statusState === 'preparing';
+      const preparing = this.vocabularyState === 'preparing';
       let body = '';
 
       if (!item && !complete) {
         body = preparing
-          ? `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">⏳</div><h4>Getting your word cards ready</h4><p>They’ll appear here when the video analysis finishes.</p></div>`
-          : `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">📖</div><h4>No word cards yet</h4><p>Add words you want to learn. Include a meaning so you can test yourself before watching.</p>
+          ? `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">⏳</div><h4>Finding useful words in the captions</h4><p>This can take a moment. Only words and examples found in the captions will be shown.</p></div>`
+          : `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">${this.vocabularyState === 'unavailable' ? '💬' : '📖'}</div><h4>${this.vocabularyState === 'unavailable' ? 'Captions aren’t available' : this.vocabularyState === 'error' ? 'Couldn’t prepare the word cards' : 'No word cards yet'}</h4><p>${this.escapeHtml(this.vocabularyMessage || (this.vocabularyState === 'unavailable' ? 'No transcript was available, so we didn’t guess. Add words yourself or continue to the video.' : 'Add words you want to learn. Include a translation so you can test yourself before watching.'))}</p>
             <form id="yt-learn-vocab-add-form" class="yt-learn-vocab-add-form">
               <input name="word" required maxlength="100" placeholder="Word or phrase" aria-label="Word or phrase" />
-              <input name="meaning" required maxlength="240" placeholder="Meaning / translation" aria-label="Meaning or translation" />
+              <input name="translation" required maxlength="240" placeholder="Translation" aria-label="Translation" />
+              <input name="explanation" maxlength="300" placeholder="Simple explanation (optional)" aria-label="Simple explanation" />
               <input name="context" maxlength="300" placeholder="Example from the video (optional)" aria-label="Example from the video" />
               <button class="yt-learn-btn yt-learn-btn-primary" type="submit">Add first card</button>
             </form></div>`;
@@ -1726,9 +1773,11 @@ export class UIManager {
             <div class="yt-learn-vocab-card-word">${this.escapeHtml(item.word)}</div>
             ${item.pronunciation ? `<div class="yt-learn-vocab-pron">${this.escapeHtml(item.pronunciation)}</div>` : ''}
             ${prep.revealed ? `<div class="yt-learn-vocab-answer">
-              <div class="yt-learn-vocab-meaning">${this.escapeHtml(item.meaning || 'Add a meaning to make this card easier to study.')}</div>
-              ${item.context ? `<blockquote>${this.escapeHtml(item.context)}</blockquote>` : ''}
-              ${item.timestamp !== null ? `<button class="yt-learn-timestamp-btn" id="yt-learn-vocab-jump" type="button">▶ Hear it in the video · ${UIManager.formatTimestamp(item.timestamp)}</button>` : ''}
+              <div class="yt-learn-vocab-meaning">${this.escapeHtml(item.translation || item.meaning || 'Add a translation to make this card easier to study.')}</div>
+              ${item.explanation ? `<div class="yt-learn-vocab-explanation">${this.escapeHtml(item.explanation)}</div>` : ''}
+              ${item.contextualMeaning ? `<div class="yt-learn-vocab-context-meaning"><strong>Here it means:</strong> ${this.escapeHtml(item.contextualMeaning)}</div>` : ''}
+              ${(item.example || item.context) ? `<blockquote>${this.escapeHtml(item.example || item.context)}</blockquote>` : ''}
+              ${item.timestamp !== null && !this.vocabularyPrepGate ? `<button class="yt-learn-timestamp-btn" id="yt-learn-vocab-jump" type="button">▶ Hear it in the video · ${UIManager.formatTimestamp(item.timestamp)}</button>` : ''}
             </div>` : '<p class="yt-learn-vocab-prompt">Think of the meaning, then reveal the answer.</p>'}
           </article>
           ${prep.revealed
@@ -1737,27 +1786,33 @@ export class UIManager {
           <div class="yt-learn-vocab-secondary-actions"><button class="yt-learn-btn-ghost" id="yt-learn-vocab-edit-toggle">✎ Fix this card</button></div>
           <form id="yt-learn-vocab-edit-form" class="yt-learn-vocab-add-form is-hidden">
             <input name="word" required maxlength="100" value="${this.escapeHtml(item.word)}" aria-label="Word or phrase" />
-            <input name="meaning" required maxlength="240" value="${this.escapeHtml(item.meaning)}" placeholder="Meaning / translation" aria-label="Meaning or translation" />
-            <input name="context" maxlength="300" value="${this.escapeHtml(item.context)}" placeholder="Example (optional)" aria-label="Example" />
+            <input name="translation" required maxlength="240" value="${this.escapeHtml(item.translation || item.meaning)}" placeholder="Translation" aria-label="Translation" />
+            <input name="explanation" maxlength="300" value="${this.escapeHtml(item.explanation)}" placeholder="Simple explanation" aria-label="Simple explanation" />
+            <input name="contextualMeaning" maxlength="300" value="${this.escapeHtml(item.contextualMeaning)}" placeholder="Meaning in this video" aria-label="Meaning in this video" />
+            <input name="example" maxlength="300" value="${this.escapeHtml(item.example || item.context)}" placeholder="Example from the video" aria-label="Example from the video" />
             <button class="yt-learn-btn yt-learn-btn-secondary" type="submit">Save correction</button>
           </form>
           <div class="yt-learn-vocab-secondary-actions"><button class="yt-learn-btn-ghost" id="yt-learn-vocab-add-toggle">＋ Add your own word</button></div>
           <form id="yt-learn-vocab-add-form" class="yt-learn-vocab-add-form is-hidden">
             <input name="word" required maxlength="100" placeholder="Word or phrase" aria-label="Word or phrase" />
-            <input name="meaning" required maxlength="240" placeholder="Meaning / translation" aria-label="Meaning or translation" />
+            <input name="translation" required maxlength="240" placeholder="Translation" aria-label="Translation" />
+            <input name="explanation" maxlength="300" placeholder="Simple explanation (optional)" aria-label="Simple explanation" />
             <input name="context" maxlength="300" placeholder="Example (optional)" aria-label="Example" />
             <button class="yt-learn-btn yt-learn-btn-secondary" type="submit">Add card</button>
           </form>`;
       }
 
       wrapper.innerHTML = `<div class="yt-learn-card yt-learn-vocab-card yt-learn-vocab-study">
-        <div class="yt-learn-card-header"><div><h3 class="yt-learn-concept-title" style="font-size:16px;">📖 Prep the video vocabulary</h3><div class="yt-learn-vocab-subtitle">Recall each meaning before you reveal it</div></div><button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-vocab-close" aria-label="Close">✕</button></div>
+        <div class="yt-learn-card-header"><div><h3 class="yt-learn-concept-title" style="font-size:16px;">📖 Prep the video vocabulary</h3><div class="yt-learn-vocab-subtitle">${this.vocabularyPrepGate ? `Level ${this.escapeHtml(this.settings.vocabularyLevel || 'B1')} · translate into ${this.escapeHtml(this.settings.vocabularyTranslationLanguage || 'English')}` : 'Recall each meaning before you reveal it'}</div></div>${this.vocabularyPrepGate ? '' : '<button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-vocab-close" aria-label="Close">✕</button>'}</div>
         <div class="yt-learn-card-body">${body}</div>
-        <div class="yt-learn-card-footer"><span>Short recall practice · your answers stay on this page</span><button class="yt-learn-btn-ghost" id="yt-learn-vocab-finish">Done</button></div>
+        <div class="yt-learn-card-footer"><span>${this.vocabularyPrepGate ? 'Review first, then continue to the video.' : 'Short recall practice · your answers stay on this page'}</span><button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-vocab-continue">${this.vocabularyPrepGate ? 'Start watching' : 'Done'}</button></div>
       </div>`;
 
       wrapper.querySelector('#yt-learn-vocab-close')?.addEventListener('click', () => this.closeOverlay());
-      wrapper.querySelector('#yt-learn-vocab-finish')?.addEventListener('click', () => this.closeOverlay());
+      wrapper.querySelector('#yt-learn-vocab-continue')?.addEventListener('click', () => {
+        if (this.vocabularyPrepGate && typeof this.callbacks.onContinueVocabulary === 'function') this.callbacks.onContinueVocabulary();
+        else this.closeOverlay();
+      });
       wrapper.querySelector('#yt-learn-vocab-reveal')?.addEventListener('click', () => { prep.revealed = true; render(); });
       wrapper.querySelector('#yt-learn-vocab-got-it')?.addEventListener('click', () => { prep.known++; prep.position++; prep.revealed = false; render(); });
       wrapper.querySelector('#yt-learn-vocab-again')?.addEventListener('click', () => { prep.review.push(currentIndex); prep.position++; prep.revealed = false; render(); });
@@ -1773,9 +1828,10 @@ export class UIManager {
         const form = event.currentTarget;
         const formData = new FormData(form);
         const word = String(formData.get('word') || '').trim();
-        const meaning = String(formData.get('meaning') || '').trim();
-        if (!word || !meaning) return;
-        cleanWords[currentIndex] = { ...item, word, meaning, context: String(formData.get('context') || '').trim() };
+        const translation = String(formData.get('translation') || '').trim();
+        if (!word || !translation) return;
+        const example = String(formData.get('example') || '').trim();
+        cleanWords[currentIndex] = { ...item, word, translation, meaning: translation, explanation: String(formData.get('explanation') || '').trim(), contextualMeaning: String(formData.get('contextualMeaning') || '').trim(), example, context: example };
         this.vocabulary = cleanWords;
         render();
       });
@@ -1790,9 +1846,10 @@ export class UIManager {
         const form = event.currentTarget;
         const formData = new FormData(form);
         const word = String(formData.get('word') || '').trim();
-        const meaning = String(formData.get('meaning') || '').trim();
-        if (!word || !meaning) return;
-        cleanWords.push({ word, meaning, context: String(formData.get('context') || '').trim(), pronunciation: '', timestamp: null });
+        const translation = String(formData.get('translation') || '').trim();
+        if (!word || !translation) return;
+        const example = String(formData.get('context') || '').trim();
+        cleanWords.push({ word, translation, meaning: translation, explanation: String(formData.get('explanation') || '').trim(), example, context: example, pronunciation: '', timestamp: null });
         this.vocabulary = cleanWords;
         prep.queue.push(cleanWords.length - 1);
         form.reset();

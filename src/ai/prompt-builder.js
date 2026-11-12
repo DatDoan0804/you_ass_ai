@@ -469,36 +469,6 @@ export const SCHEMAS = {
         type: 'STRING',
         description: 'Concise 2-sentence summary of the video content and main learning theme.'
       },
-      newWords: {
-        type: 'ARRAY',
-        description: 'Table of new words, specialized vocabulary, key terms, or idioms from the video in the original language, allowing the user to take a quick glance before diving into the video (independent from breakpoints).',
-        items: {
-          type: 'OBJECT',
-          properties: {
-            word: {
-              type: 'STRING',
-              description: 'The word or phrase in its original language as spoken/used in the video transcript.'
-            },
-            pronunciation: {
-              type: 'STRING',
-              description: 'Optional pronunciation guide, phonetic spelling, pinyin, romaji, or IPA if applicable.'
-            },
-            meaning: {
-              type: 'STRING',
-              description: 'Clear, concise translation or definition in plain, friendly language.'
-            },
-            context: {
-              type: 'STRING',
-              description: 'Brief example phrase or sentence from the video transcript showing how it was used.'
-            },
-            timestamp: {
-              type: 'NUMBER',
-              description: 'Timestamp in seconds where the word appears or is introduced in the video.'
-            }
-          },
-          required: ['word', 'meaning']
-        }
-      },
       breakpoints: {
         type: 'ARRAY',
         description: 'Chronologically ordered list of learning checkpoints with questions.',
@@ -585,6 +555,30 @@ export const SCHEMAS = {
       }
     },
     required: ['overview', 'breakpoints']
+  },
+
+  VIDEO_VOCABULARY: {
+    type: 'OBJECT',
+    properties: {
+      vocabulary: {
+        type: 'ARRAY',
+        description: 'A short list of 5 to 8 transcript-grounded vocabulary cards, or an empty array if the transcript does not contain enough useful items.',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            word: { type: 'STRING', description: 'Exact original-language word or multiword expression from transcript.' },
+            translation: { type: 'STRING', description: 'Natural translation into the learner native language.' },
+            explanation: { type: 'STRING', description: 'Simple learner-level explanation of the expression.' },
+            example: { type: 'STRING', description: 'An exact short sentence or excerpt copied from the transcript.' },
+            pronunciation: { type: 'STRING', description: 'IPA or standard pronunciation; empty string if not applicable.' },
+            contextualMeaning: { type: 'STRING', description: 'The specific sense intended in this video, explained plainly.' },
+            timestamp: { type: 'NUMBER', description: 'Timestamp in seconds for an input cue where the expression appears.' }
+          },
+          required: ['word', 'translation', 'explanation', 'example', 'pronunciation', 'contextualMeaning', 'timestamp']
+        }
+      }
+    },
+    required: ['vocabulary']
   }
 };
 
@@ -954,17 +948,7 @@ CRITICAL INSTRUCTIONS — ULTRA-CASUAL, NATURAL & DIRECTLY TIED TO THE VIDEO:
 7. LANGUAGE:
    - If the video transcript is in Vietnamese (or another non-English language), generate the questions and options in that language using a friendly, natural, casual tone.
    - Otherwise, use simple, friendly, everyday English.
-8. TABLE OF NEW WORDS IN ORIGINAL LANGUAGE (INDEPENDENT FROM BREAKPOINTS):
-   - Extract 5 to 8 high-value items in the "newWords" array. Prefer useful phrases, idioms, and subject-specific terms a learner may need to understand this video; skip everyday words, names, and broad chapter topics.
-   - Every word MUST be in the ORIGINAL LANGUAGE of the video transcript (e.g. if the video is in French, Spanish, Japanese, Vietnamese, etc., the word is written in that original language; if in English, choose specialized, technical, or notable vocabulary).
-   - For each word, include:
-     * "word": Copy the word or expression exactly as it appears in the original-language transcript. Do not invent or normalize it.
-     * "pronunciation": (Optional) Phonetic guide or reading if applicable (e.g., IPA, pinyin, hiragana/romaji).
-     * "meaning": Concise, plain explanation or translation in friendly everyday language.
-     * "context": A short, exact transcript excerpt containing the word, with enough surrounding text to show its meaning. Never fabricate an example.
-     * "timestamp": The timestamp in seconds of a transcript cue that contains this exact word or phrase. If no matching cue is available, omit the timestamp.
-   - Choose items that make the upcoming video easier to follow, not an exhaustive vocabulary list. The viewer will practice each card by recalling its meaning before revealing the explanation. This vocabulary prep is independent from playback breakpoints.
-9. GROUNDING: Everything must be strictly grounded in what actually happens in the video transcript.
+8. GROUNDING: Everything must be strictly grounded in what actually happens in the video transcript.
 
 Output a valid JSON object matching the schema.`;
 
@@ -1007,12 +991,61 @@ Transcript:
 ${transcriptText}
 """
 
-Generate the structured JSON plan of breakpoints and questions for this video according to the rules, including the table of new words in the original language and the final summary activity.`;
+Generate the structured JSON plan of breakpoints and questions for this video according to the rules, including the final summary activity.`;
 
     return {
       systemPrompt,
       userPrompt,
       schema: SCHEMAS.VIDEO_BREAKPOINTS_AND_ACTIVITIES
     };
+  }
+
+  static buildVideoVocabularyPrompt({
+    videoTitle = '',
+    transcriptCues = [],
+    transcriptLanguage = 'the language used in the transcript',
+    translationLanguage = 'English',
+    learnerLevel = 'B1'
+  } = {}) {
+    const cueLines = (Array.isArray(transcriptCues) ? transcriptCues : [])
+      .filter((cue) => cue && typeof cue.text === 'string' && cue.text.trim())
+      .map((cue) => `[${Number(cue.start) || 0}s] ${cue.text.trim()}`);
+    const maxChars = 36000;
+    let transcript = cueLines.join('\n');
+    if (transcript.length > maxChars) {
+      const sampled = [];
+      let size = 0;
+      const averageLength = transcript.length / Math.max(1, cueLines.length);
+      const sampleCount = Math.max(1, Math.floor(maxChars / Math.max(averageLength, 1)));
+      for (let i = 0; i < sampleCount; i++) {
+        const cueIndex = Math.round(i * (cueLines.length - 1) / Math.max(1, sampleCount - 1));
+        const line = cueLines[cueIndex].slice(0, 260);
+        if (size + line.length + 1 > maxChars) continue;
+        sampled.push(line);
+        size += line.length + 1;
+      }
+      transcript = sampled.join('\n');
+    }
+
+    const systemPrompt = `You prepare a concise pre-video vocabulary lesson for a language learner. The transcript below is the only source of vocabulary and examples.
+
+Learner level: ${learnerLevel} (CEFR A1-C2)
+Learner's translation language: ${translationLanguage}
+Transcript language: ${transcriptLanguage}
+
+Choose 5-8 high-value words or expressions that a learner at this level may not know and that help them follow this video's main ideas. Include important verbs, nouns, adjectives, adverbs, phrasal verbs, idioms, and multiword expressions. Skip names, basic words below the learner's level, duplicates, and generic topics.
+
+Return JSON matching the schema. For every item:
+- Copy the original word or multiword expression exactly from the transcript.
+- Translate naturally into the learner's translation language.
+- Write the translation, simple explanation, and contextual meaning in the learner's translation language; keep wording clear at the learner's CEFR level.
+- Give a short exact example excerpt copied from the transcript. Never invent an example.
+- Explain the contextual sense used here; distinguish it from other common meanings if needed.
+- Give IPA when useful and reliable; otherwise use an empty string.
+- Give the timestamp of a cue where the expression appears.
+
+Never include an item unless the original expression and example are present in the provided transcript. Return an empty vocabulary array if there is not enough reliable transcript evidence. Do not infer vocabulary from the title or chapter names.`;
+    const userPrompt = `Video: ${videoTitle || '(untitled)'}\n\nOriginal-language transcript cues:\n"""\n${transcript}\n"""\n\nCreate the vocabulary cards now.`;
+    return { systemPrompt, userPrompt, schema: SCHEMAS.VIDEO_VOCABULARY };
   }
 }

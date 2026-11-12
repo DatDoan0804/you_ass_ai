@@ -333,11 +333,12 @@ export class YouTubeLearningAssistantApp {
       onManualTriggerActivity: this.handleManualTriggerActivity.bind(this),
       onTimelineMarkerClick: this.handleTimelineMarkerClick.bind(this),
       onOverrideClassification: this.handleOverrideClassification.bind(this),
+      onContinueVocabulary: this.handleContinueFromVocabulary.bind(this),
       onSeekToTimestamp: (timestamp) => {
         if (typeof timestamp === 'number' && !isNaN(timestamp)) {
           this.log(`[Vocabulary] Seeking video to word timestamp: ${timestamp.toFixed(1)}s`);
           this.videoController.seekTo(timestamp);
-          this.videoController.play();
+          if (!this.vocabularyPrepGate) this.videoController.resume();
         }
       },
       onRetryMetadataCheck: () => {
@@ -456,6 +457,9 @@ export class YouTubeLearningAssistantApp {
     this.uiManager.clearDualSubtitles();
     this.uiManager.setVideoClassification(null, false);
     this.uiManager.setVocabulary([]);
+    this.vocabularyPrepGate = false;
+    this.videoController.setPlaybackGate(false);
+    this.uiManager.setVocabularyPrepGate(false);
     this.syncTimelineMarkers();
 
     if (!videoId) {
@@ -464,7 +468,14 @@ export class YouTubeLearningAssistantApp {
     }
 
     this.uiManager.mountDedicatedBarInSafeSlot();
-    this.uiManager.setStatus('Loading Captions...', 'preparing');
+    this.vocabularyPrepGate = this.settings.enabled !== false && this.settings.enableVocabularyPrep !== false;
+    this.videoController.setPlaybackGate(this.vocabularyPrepGate);
+    this.uiManager.setVocabularyPrepGate(this.vocabularyPrepGate);
+    this.uiManager.setStatus(this.vocabularyPrepGate ? 'Preparing vocabulary...' : 'Loading Captions...', 'preparing');
+    if (this.vocabularyPrepGate) {
+      this.uiManager.setVocabularyStatus('preparing');
+      this.uiManager.showVocabularyDrawer();
+    }
 
     if (!metadata) {
       // Interim call on navigation: Dedicated Bar is mounted immediately with 'Loading Captions...'
@@ -528,6 +539,19 @@ export class YouTubeLearningAssistantApp {
       return;
     }
 
+    if (this.vocabularyPrepGate) {
+      const originalCues = await this.getOriginalTranscriptCues(subtitleResult);
+      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+      if (originalCues.length > 0) {
+        await this.prepareVideoVocabulary(videoId, sessionEpoch, originalCues);
+      } else {
+        this.uiManager.setVocabularyStatus(
+          'unavailable',
+          'YouTube did not provide an original-language transcript for this video. Turn on captions or add a word yourself; we won’t invent a list.'
+        );
+      }
+    }
+
     const chapters = this.videoMetadata.chapters || [];
 
     const classification = await this.contentAnalyzer.classifyVideo({
@@ -583,17 +607,167 @@ export class YouTubeLearningAssistantApp {
     }
   }
 
+  async getOriginalTranscriptCues(subtitleResult = {}) {
+    const cachedPrimary = subtitleResult.primaryCues || this.subtitleManager.primaryCues || [];
+    if (Array.isArray(cachedPrimary) && cachedPrimary.length > 0) return cachedPrimary;
+
+    const tracks = this.videoMetadata?.captionTracks || [];
+    const preferred = this.settings.primarySubtitleLang || 'auto';
+    const selected = this.subtitleManager.primaryTrack;
+    const candidate = (selected?.baseUrl && tracks.find((track) => track.baseUrl === selected.baseUrl)) ||
+      SubtitleManager.selectBestTrack(tracks, preferred) ||
+      tracks.find((track) => track.baseUrl);
+    if (!candidate?.baseUrl) return [];
+
+    try {
+      return await this.subtitleManager.fetchAndParseTrack(candidate.baseUrl);
+    } catch (err) {
+      this.log(`[Vocabulary] Could not load the original caption track: ${err.message}`);
+      return [];
+    }
+  }
+
+  static validateVocabularyResponse(response, transcriptCues = []) {
+    const rawItems = Array.isArray(response?.vocabulary) ? response.vocabulary : [];
+    const normalize = (value) => String(value || '')
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim()
+      .replace(/\s+/g, ' ');
+    const containsPhrase = (text, phrase) => {
+      if (!phrase) return false;
+      if (/[\u3040-\u30ff\u3400-\u9fff]/u.test(phrase)) return text.includes(phrase);
+      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+      return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, 'u').test(text);
+    };
+    const cues = (Array.isArray(transcriptCues) ? transcriptCues : [])
+      .filter((cue) => cue && typeof cue.text === 'string' && cue.text.trim())
+      .map((cue) => ({ ...cue, normalized: normalize(cue.text) }));
+    const transcript = cues.map((cue) => cue.normalized).join(' ');
+    const seen = new Set();
+    const validated = [];
+
+    for (const raw of rawItems) {
+      if (!raw || typeof raw !== 'object') continue;
+      const word = typeof raw.word === 'string' ? raw.word.trim() : '';
+      const translation = typeof raw.translation === 'string' ? raw.translation.trim() : '';
+      const explanation = typeof raw.explanation === 'string' ? raw.explanation.trim() : '';
+      const example = typeof raw.example === 'string' ? raw.example.trim() : '';
+      const contextualMeaning = typeof raw.contextualMeaning === 'string' ? raw.contextualMeaning.trim() : '';
+      const normalizedWord = normalize(word);
+      const normalizedExample = normalize(example);
+      const isCjk = /[\u3040-\u30ff\u3400-\u9fff]/u.test(normalizedWord);
+      if (!word || !translation || !explanation || !example || !contextualMeaning) continue;
+      if (normalizedWord.length < (isCjk ? 1 : 2) || !containsPhrase(transcript, normalizedWord)) continue;
+      if (normalizedExample.length < (isCjk ? 3 : 8) || !transcript.includes(normalizedExample)) continue;
+      if (seen.has(normalizedWord)) continue;
+      seen.add(normalizedWord);
+
+      const matchingCues = cues.filter((cue) => containsPhrase(cue.normalized, normalizedWord));
+      const rawTimestamp = Number(raw.timestamp);
+      const timestamp = Number.isFinite(rawTimestamp)
+        ? (matchingCues.find((cue) => Math.abs(Number(cue.start) - rawTimestamp) <= 15) || matchingCues[0])?.start
+        : matchingCues[0]?.start;
+
+      validated.push({
+        word,
+        translation,
+        meaning: translation,
+        explanation,
+        example,
+        context: example,
+        contextualMeaning,
+        pronunciation: typeof raw.pronunciation === 'string' ? raw.pronunciation.trim() : '',
+        timestamp: Number.isFinite(Number(timestamp)) ? Number(timestamp) : null
+      });
+      if (validated.length >= 8) break;
+    }
+    return validated;
+  }
+
+  async prepareVideoVocabulary(videoId, sessionEpoch, transcriptCues) {
+    if (!Array.isArray(transcriptCues) || transcriptCues.length === 0) {
+      this.uiManager.setVocabularyStatus('unavailable');
+      return;
+    }
+
+    try {
+      this.uiManager.setVocabularyStatus('preparing');
+      const transcriptLanguage = this.subtitleManager.primaryTrack?.name ||
+        this.subtitleManager.primaryTrack?.languageCode || 'the video language';
+      const translationLanguage = this.settings.vocabularyTranslationLanguage || 'English';
+      const learnerLevel = this.settings.vocabularyLevel || 'B1';
+      const promptSpec = PromptBuilder.buildVideoVocabularyPrompt({
+        videoTitle: this.videoMetadata?.title || '',
+        transcriptCues,
+        transcriptLanguage,
+        translationLanguage,
+        learnerLevel
+      });
+      const transcriptTrack = this.subtitleManager.primaryTrack?.languageCode || 'auto';
+      const cacheKey = `video_vocab_${videoId}_${transcriptTrack}_${learnerLevel}_${translationLanguage.toLowerCase()}`;
+      const response = await this.requestHandler('AI_GENERATE_VIDEO_VOCABULARY', {
+        videoId,
+        sessionEpoch,
+        cacheKey,
+        promptSpec
+      });
+      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+      if (!response?.ok) {
+        const error = new Error(response?.error || 'Vocabulary service unavailable.');
+        error.status = response?.status;
+        error.code = response?.code;
+        if (!error.status && /(?:429|rate.?limit)/i.test(error.message)) error.status = 429;
+        throw error;
+      }
+
+      const words = YouTubeLearningAssistantApp.validateVocabularyResponse(response.data, transcriptCues);
+      this.vocabulary = words;
+      this.uiManager.setVocabulary(words);
+      if (words.length > 0) {
+        this.uiManager.setVocabularyStatus('ready');
+        this.log(`[Vocabulary] Prepared and transcript-validated ${words.length} cards.`);
+      } else {
+        this.uiManager.setVocabularyStatus(
+          'empty',
+          'The captions did not contain enough reliable, level-appropriate vocabulary. Add a word yourself or continue to the video.'
+        );
+      }
+    } catch (err) {
+      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+      this.log(`[Vocabulary] Preparation failed: ${err.message}`);
+      const message = err.code === 'MISSING_API_KEY'
+        ? 'Add your Gemini API key in Settings, then try again. You can continue to the video now.'
+        : err.status === 429 || err.code === 'RATE_LIMITED'
+        ? 'Gemini is temporarily rate-limited. You can add words yourself or continue to the video.'
+        : 'The vocabulary response could not be verified. Add words yourself or continue to the video.';
+      this.uiManager.setVocabularyStatus('error', message);
+    }
+  }
+
+  handleContinueFromVocabulary() {
+    if (!this.vocabularyPrepGate) {
+      this.uiManager.closeOverlay();
+      return;
+    }
+    this.vocabularyPrepGate = false;
+    this.uiManager.closeOverlay();
+    this.uiManager.setVocabularyPrepGate(false);
+    this.uiManager.setStatus('Ready', 'ready');
+    this.videoController.setPlaybackGate(false);
+    this.videoController.resume();
+  }
+
   /**
-   * Sends the transcript and chapter end timestamps to Gemini AI.
-   * Gemini decides the optimal breakpoint timestamps, generates tailored questions,
-   * enforces interval spacing, and adds an overarching summary activity at the end of the video.
+   * Sends transcript and chapter timestamps to Gemini for interactive breakpoints.
    */
   async planBreakpointsWithGemini(videoId, sessionEpoch, subtitleResult, chapters = []) {
     if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
     if (this.settings.enabled === false) return;
 
     try {
-      this.uiManager.setStatus('Preparing words and video check-ins...', 'preparing');
+      this.uiManager.setStatus('AI Planning Video Check-ins...', 'preparing');
 
       const videoDuration = this.getEffectiveDuration();
       const promptSpec = PromptBuilder.buildVideoBreakpointsAndActivitiesPrompt({
@@ -622,13 +796,6 @@ export class YouTubeLearningAssistantApp {
       if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
 
       if (res && res.ok && res.data) {
-        const rawWords = res.data.newWords || res.data.vocabulary;
-        if (Array.isArray(rawWords) && rawWords.length > 0) {
-          this.vocabulary = rawWords;
-          this.uiManager.setVocabulary(rawWords);
-          this.log(`[Vocabulary] Loaded ${rawWords.length} new words in original language from Gemini.`);
-        }
-
         if (Array.isArray(res.data.breakpoints) && res.data.breakpoints.length > 0) {
           this.log(
             `[Breakpoint] Gemini AI planned ${res.data.breakpoints.length} checkpoints and questions for video!`

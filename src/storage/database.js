@@ -27,6 +27,9 @@ export const DEFAULT_SETTINGS = {
   skipMinorActivities: false,
   enableNonEducationalIntervention: true, // Redirects to YouTube home after ~5 mins of actual playback on non-educational videos
   enableDualSubtitles: true, // Companion Subtitle overlay (displayed alongside YouTube native captions)
+  enableVocabularyPrep: true,
+  vocabularyTranslationLanguage: 'English',
+  vocabularyLevel: 'B1', // CEFR level A1-C2
   primarySubtitleLang: 'auto', // 'auto' | language code
   secondarySubtitleLang: 'en', // default translation / companion language downloaded on demand
   subtitleFontSize: 'medium', // 'small' | 'medium' | 'large'

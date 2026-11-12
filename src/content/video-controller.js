@@ -37,11 +37,13 @@ export class VideoController {
     this.lastProcessedBucket = -1;
     this.isSystemPausing = false;
     this.isProgrammaticSeek = false;
+    this.playbackGate = false;
 
     this.boundTimeUpdate = this.handleTimeUpdate.bind(this);
     this.boundSeeked = this.handleSeeked.bind(this);
     this.boundRateChange = this.handleRateChange.bind(this);
     this.boundDurationChange = this.handleDurationChange.bind(this);
+    this.boundPlay = this.handlePlay.bind(this);
     this.boundNavigateFinish = this.handleNavigation.bind(this);
     this.mutationObserver = null;
   }
@@ -146,6 +148,7 @@ export class VideoController {
     this.videoElement.addEventListener('ratechange', this.boundRateChange);
     this.videoElement.addEventListener('durationchange', this.boundDurationChange);
     this.videoElement.addEventListener('loadedmetadata', this.boundDurationChange);
+    this.videoElement.addEventListener('play', this.boundPlay);
   }
 
   detachVideoListeners() {
@@ -155,6 +158,7 @@ export class VideoController {
       this.videoElement.removeEventListener('ratechange', this.boundRateChange);
       this.videoElement.removeEventListener('durationchange', this.boundDurationChange);
       this.videoElement.removeEventListener('loadedmetadata', this.boundDurationChange);
+      this.videoElement.removeEventListener('play', this.boundPlay);
       this.videoElement = null;
     }
   }
@@ -194,6 +198,18 @@ export class VideoController {
     const dur = this.videoElement.duration;
     if (Number.isFinite(dur) && dur > 0 && typeof this.onDurationChange === 'function') {
       this.onDurationChange(dur);
+    }
+  }
+
+  setPlaybackGate(active) {
+    this.playbackGate = Boolean(active);
+    if (this.playbackGate) this.pause();
+  }
+
+  handlePlay() {
+    if (this.playbackGate && this.videoElement && !this.videoElement.paused) {
+      this.log('[Vocabulary] Pausing playback until vocabulary prep is continued.');
+      this.videoElement.pause();
     }
   }
 

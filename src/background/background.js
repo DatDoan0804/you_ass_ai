@@ -147,6 +147,7 @@ async function handleMessage(message, tabId) {
     case 'AI_EXPLAIN_CONCEPT':
     case 'AI_TUTOR_FOLLOW_UP':
     case 'AI_SYNTHESIZE_MILESTONE_TITLE':
+    case 'AI_GENERATE_VIDEO_VOCABULARY':
     case 'AI_PLAN_BREAKPOINTS_AND_ACTIVITIES': {
       return executeAiRequest(tabId, action, payload);
     }
