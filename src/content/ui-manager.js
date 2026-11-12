@@ -200,6 +200,7 @@ export class UIManager {
       this.vocabularyState = 'empty';
       this.vocabularyMessage = '';
     }
+    console.info(`[YT-Learn Vocabulary] Frontend state updated: incoming=${incoming.length}, displayed=${this.vocabulary.length}, panel=${this.activePanel || 'closed'}`);
     this.renderDedicatedBar();
 
     if (this.activePanel === 'vocabulary') {
@@ -210,6 +211,7 @@ export class UIManager {
   setVocabularyStatus(state, message = '') {
     this.vocabularyState = state;
     this.vocabularyMessage = message;
+    console.info(`[YT-Learn Vocabulary] UI status: ${state}; cards=${this.vocabulary.length}`);
     if (this.activePanel === 'vocabulary') this.showVocabularyDrawer();
   }
 
@@ -1734,10 +1736,11 @@ export class UIManager {
       revealed: false,
       round: 1
     };
+    console.info(`[YT-Learn Vocabulary] Rendering prep screen: state=${this.vocabularyState}, cards=${cleanWords.length}, gate=${this.vocabularyPrepGate}`);
     this.vocabPrep = prep;
 
     const render = () => {
-      const complete = prep.position >= prep.queue.length;
+      const complete = cleanWords.length > 0 && prep.position >= prep.queue.length;
       const currentIndex = complete ? -1 : prep.queue[prep.position];
       const item = currentIndex >= 0 ? cleanWords[currentIndex] : null;
       const preparing = this.vocabularyState === 'preparing';

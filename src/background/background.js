@@ -163,6 +163,9 @@ async function handleMessage(message, tabId) {
  */
 async function executeAiRequest(tabId, action, payload) {
   const { videoId, sessionEpoch, cacheKey, promptSpec } = payload;
+  if (action === 'AI_GENERATE_VIDEO_VOCABULARY') {
+    console.info(`[YT-Learn Vocabulary] Backend request received: videoId=${videoId}, epoch=${sessionEpoch}, transcriptChars=${promptSpec?.userPrompt?.length || 0}`);
+  }
 
   // 1. Return cached response immediately if available
   if (cacheKey && memoryCache.has(cacheKey)) {
@@ -199,6 +202,9 @@ async function executeAiRequest(tabId, action, payload) {
         temperature: action === 'AI_GENERATE_ACTIVITY' ? 0.35 : 0.2,
         signal: controller.signal
       });
+      if (action === 'AI_GENERATE_VIDEO_VOCABULARY') {
+        console.info(`[YT-Learn Vocabulary] Backend response parsed: videoId=${videoId}, entries=${Array.isArray(result?.vocabulary) ? result.vocabulary.length : 'missing'}, model=${settings.model || 'configured default'}`);
+      }
 
       // 4. Re-verify session after async completion so a slow request never mutates a newly opened video
       const postSession = activeTabSessions.get(tabId);

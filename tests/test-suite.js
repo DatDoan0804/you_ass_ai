@@ -2280,198 +2280,123 @@ berlin and more than any other city i've
     assert.strictEqual(cleaned[1].text, 'Consistency is the key.', 'Repeated prefix trimmed and capitalized');
   });
 
-  console.log('\n21. Table of New Words in Original Language (Independent from Breakpoint)');
+  console.log('\n21. Pre-Video Vocabulary Preparation');
 
-  await test('PromptBuilder.buildVideoBreakpointsAndActivitiesPrompt includes newWords schema and instructions', () => {
-    const promptObj = PromptBuilder.buildVideoBreakpointsAndActivitiesPrompt({
-      videoTitle: 'Learn Japanese Basics',
-      videoDuration: 700,
-      chapters: [{ title: 'Greetings', start: 0, end: 350 }],
-      transcriptChunks: [
-        { start: 0, end: 180, chapterTitle: 'Greetings', text: 'Konnichiwa means hello. Arigatou means thank you.' }
-      ],
-      minIntervalSeconds: 300
-    });
-
-    assert.ok(promptObj.schema.properties.newWords, 'newWords property exists in schema');
-    assert.strictEqual(promptObj.schema.properties.newWords.type, 'ARRAY');
-    assert.ok(promptObj.schema.properties.newWords.items.properties.word);
-    assert.ok(promptObj.schema.properties.newWords.items.properties.meaning);
-    assert.ok(promptObj.schema.properties.newWords.items.properties.context);
-    assert.ok(promptObj.schema.properties.newWords.items.properties.timestamp);
-    assert.ok(promptObj.systemPrompt.includes('TABLE OF NEW WORDS IN ORIGINAL LANGUAGE'));
-    assert.ok(promptObj.systemPrompt.includes('INDEPENDENT FROM BREAKPOINTS'));
-    assert.ok(promptObj.userPrompt.includes('table of new words in the original language'));
-  });
-
-  await test('YouTubeLearningAssistantApp receives new words and stores them independently of breakpoints', async () => {
-    const mockSender = async (action, payload) => {
-      if (action === 'AI_PLAN_BREAKPOINTS_AND_ACTIVITIES') {
-        return {
-          ok: true,
-          data: {
-            overview: 'Learn French video.',
-            newWords: [
-              { word: 'Bonjour', pronunciation: 'bɔ̃.ʒuʁ', meaning: 'Hello', context: 'Bonjour tout le monde', timestamp: 15 },
-              { word: 'Merci', pronunciation: 'mɛʁ.si', meaning: 'Thank you', context: 'Merci beaucoup', timestamp: 45 }
-            ],
-            breakpoints: [
-              {
-                timestamp: 300,
-                milestoneTitle: 'French Greetings Checkpoint',
-                activity: { type: 'multiple_choice', question: 'What does Bonjour mean?', options: ['Hello', 'Bye', 'Yes', 'No'], correctIndex: 0, explanation: 'Bonjour means hello.' }
-              }
-            ]
-          }
-        };
-      }
-      return { ok: true };
-    };
-
-    const app = new YouTubeLearningAssistantApp({ requestHandler: mockSender });
-    app.currentVideoId = 'french101';
-    app.sessionEpoch = 1;
-    app.videoController.isSessionValid = () => true;
-
-    await app.planBreakpointsWithGemini('french101', 1, { chunks: [{ start: 0, end: 300, text: 'Bonjour tout le monde' }] }, []);
-
-    assert.strictEqual(app.vocabulary.length, 2, 'Received 2 new words in original language');
-    assert.strictEqual(app.vocabulary[0].word, 'Bonjour');
-    assert.strictEqual(app.vocabulary[0].meaning, 'Hello');
-    assert.strictEqual(app.vocabulary[1].word, 'Merci');
-    assert.strictEqual(app.uiManager.vocabulary.length, 2, 'UIManager received vocabulary');
-  });
-
-  await test('UIManager.showVocabularyDrawer renders original language table, contexts, and clickable timestamps', () => {
-    const origDoc = globalThis.document;
-    let soughtTimestamp = null;
-    let appendedElement = null;
-
-    const mockElements = [];
-    globalThis.document = {
-      createElement: (tag) => {
-        const el = {
-          tagName: tag.toUpperCase(),
-          className: '',
-          innerHTML: '',
-          style: {},
-          dataset: {},
-          children: [],
-          appendChild: (c) => el.children.push(c),
-          querySelector: (sel) => {
-            if (sel === '#yt-learn-vocab-filter') return { addEventListener: () => {}, value: '' };
-            if (sel === '#yt-learn-vocab-tbody') return { querySelectorAll: () => [] };
-            if (sel === '#yt-learn-vocab-visible-count') return { textContent: '' };
-            return null;
-          },
-          querySelectorAll: (sel) => {
-            if (sel === '.yt-learn-timestamp-btn') {
-              return [
-                {
-                  dataset: { time: '45.5' },
-                  addEventListener: (evt, handler) => {
-                    if (evt === 'click') el._seekClick = handler;
-                  }
-                }
-              ];
-            }
-            return [];
-          }
-        };
-        mockElements.push(el);
-        return el;
-      }
-    };
-
-    try {
-      const ui = new UIManager({
-        onSeekToTimestamp: (ts) => {
-          soughtTimestamp = ts;
-        }
-      });
-      ui.rootContainer = {
-        innerHTML: '',
-        appendChild: (el) => { appendedElement = el; }
-      };
-
-      const sampleWords = [
-        {
-          word: 'Konnichiwa',
-          pronunciation: 'kon-nee-chee-wah',
-          meaning: 'Good afternoon / Hello',
-          context: 'Konnichiwa everyone, welcome to the lesson.',
-          timestamp: 45.5
-        }
-      ];
-
-      ui.setVocabulary(sampleWords, { notify: false });
-      assert.strictEqual(ui.vocabulary.length, 1);
-
-      ui.showVocabularyDrawer();
-      assert.strictEqual(ui.activePanel, 'vocabulary', 'Active panel set to vocabulary');
-      assert.ok(appendedElement, 'Appended drawer to rootContainer');
-      assert.ok(appendedElement.innerHTML.includes('Konnichiwa'), 'Original language word rendered');
-      assert.ok(appendedElement.innerHTML.includes('Good afternoon / Hello'), 'Meaning rendered');
-      assert.ok(appendedElement.innerHTML.includes('kon-nee-chee-wah'), 'Pronunciation rendered');
-      assert.ok(appendedElement.innerHTML.includes('00:45'), 'Timestamp formatted');
-
-      const card = mockElements.find((e) => e.innerHTML && e.innerHTML.includes('yt-learn-vocab-card'));
-      if (card && typeof card._seekClick === 'function') {
-        card._seekClick();
-        assert.strictEqual(soughtTimestamp, 45.5, 'Clicking timestamp seeks video');
-      }
-    } finally {
-      globalThis.document = origDoc;
-    }
-  });
-
-  await test('YouTubeLearningAssistantApp.extractFallbackVocabulary extracts key terms from chapters and cues when offline', () => {
-    const chapters = [
-      { title: '1. Introduction to Photosynthesis', start: 0, end: 120 },
-      { title: '2. Chlorophyll Mechanics', start: 120, end: 300 }
-    ];
+  await test('Vocabulary prompt uses a dedicated structured schema and learner settings', () => {
     const cues = [
-      { start: 10, end: 30, text: 'Plants absorb sunlight through Chloroplast structures.' }
+      { start: 0, text: 'This is an intricate mechanism.' },
+      { start: 15, text: 'It is surprisingly robust.' }
     ];
-
-    const fallback = YouTubeLearningAssistantApp.extractFallbackVocabulary([], cues, chapters);
-    assert.ok(fallback.length >= 2, 'Extracted at least 2 key terms');
-    assert.strictEqual(fallback[0].word, 'Photosynthesis');
-    assert.strictEqual(fallback[1].word, 'Chlorophyll Mechanics');
+    const prompt = PromptBuilder.buildVideoVocabularyPrompt({
+      videoTitle: 'Engineering basics',
+      transcriptCues: cues,
+      transcriptLanguage: 'English',
+      translationLanguage: 'Vietnamese',
+      learnerLevel: 'B2'
+    });
+    assert.ok(prompt.schema.properties.vocabulary);
+    assert.ok(prompt.systemPrompt.includes('Vietnamese'));
+    assert.ok(prompt.systemPrompt.includes('B2'));
+    assert.ok(prompt.userPrompt.includes('intricate mechanism'));
   });
 
-  await test('UIManager.showQuickGlanceToast displays preview notification before diving into video', () => {
-    const origDoc = globalThis.document;
-    let appendedToast = null;
+  await test('Vocabulary validation keeps only unique entries with transcript words and exact examples', () => {
+    const transcript = [
+      { start: 5, text: 'The intricate mechanism needs careful handling.' },
+      { start: 18, text: 'This device is robust.' }
+    ];
+    const result = YouTubeLearningAssistantApp.validateVocabularyResponse({ vocabulary: [
+      { word: 'intricate mechanism', translation: 'phức tạp', explanation: 'Made of many connected parts.', example: 'The intricate mechanism needs careful handling.', contextualMeaning: 'Describes the device structure.', pronunciation: '/ˈɪn.trɪ.kət/', timestamp: 5 },
+      { word: 'intricate mechanism', translation: 'x', explanation: 'x', example: 'The intricate mechanism needs careful handling.', contextualMeaning: 'x', pronunciation: '', timestamp: 5 },
+      { word: 'unrelated word', translation: 'x', explanation: 'x', example: 'This device is robust.', contextualMeaning: 'x', pronunciation: '', timestamp: 18 },
+      { word: 'robust', translation: 'bền chắc', explanation: 'Strong and reliable.', example: 'This device is robust.', contextualMeaning: 'Describes reliability.', pronunciation: '', timestamp: 18 },
+      { word: 'careful', translation: 'cẩn thận', explanation: 'x', example: 'Invented example not in captions.', contextualMeaning: 'x', pronunciation: '', timestamp: 8 }
+    ] }, transcript);
+    assert.strictEqual(result.words.length, 2);
+    assert.strictEqual(result.received, 5);
+    assert.strictEqual(result.rejected.duplicate, 1);
+    assert.strictEqual(result.rejected.wordNotInTranscript, 1);
+    assert.strictEqual(result.rejected.exampleNotInTranscript, 1);
+    assert.strictEqual(result.words[0].timestamp, 5);
+  });
 
-    globalThis.document = {
-      createElement: (tag) => ({
-        tagName: tag.toUpperCase(),
-        className: '',
-        innerHTML: '',
-        style: {},
-        querySelector: () => null,
-        remove: () => {}
-      })
-    };
+  await test('Long transcripts are sampled across the video, including late cues', () => {
+    const cues = Array.from({ length: 1800 }, (_, index) => ({
+      start: index * 2,
+      text: index === 1799 ? 'Distinctive final vocabulary marker.' : `Caption ${index} contains useful language.`
+    }));
+    const prompt = PromptBuilder.buildVideoVocabularyPrompt({ transcriptCues: cues });
+    assert.ok(prompt.userPrompt.length < 40000, 'Prompt stays within the transcript budget');
+    assert.ok(prompt.userPrompt.includes('Distinctive final vocabulary marker'), 'Sample covers the end of the video');
+  });
 
+  await test('Vocabulary request updates application state after transcript-grounded response', async () => {
+    let requestedAction = '';
+    const app = new YouTubeLearningAssistantApp({ requestHandler: async (action, payload) => {
+      requestedAction = action;
+      assert.ok(payload.promptSpec.userPrompt.includes('intricate mechanism'));
+      return { ok: true, data: { vocabulary: [
+        { word: 'intricate mechanism', translation: 'cơ chế phức tạp', explanation: 'A device with many connected parts.', example: 'The intricate mechanism needs careful handling.', contextualMeaning: 'Describes how the machine is built.', pronunciation: '/ˈɪn.trɪ.kət/', timestamp: 5 }
+      ] } };
+    } });
+    app.videoController.isSessionValid = () => true;
+    app.currentVideoId = 'engineering101';
+    app.sessionEpoch = 2;
+    app.videoMetadata = { title: 'Engineering basics' };
+    app.subtitleManager.primaryTrack = { languageCode: 'en', name: 'English' };
+    app.settings = { vocabularyLevel: 'B2', vocabularyTranslationLanguage: 'Vietnamese' };
+    await app.prepareVideoVocabulary('engineering101', 2, [
+      { start: 5, text: 'The intricate mechanism needs careful handling.' }
+    ]);
+    assert.strictEqual(requestedAction, 'AI_GENERATE_VIDEO_VOCABULARY');
+    assert.strictEqual(app.vocabulary.length, 1);
+    assert.strictEqual(app.uiManager.vocabulary.length, 1);
+    assert.strictEqual(app.uiManager.vocabularyState, 'ready');
+  });
+
+  await test('Gemini rate-limit errors reach the vocabulary UI instead of looking like empty success', async () => {
+    const app = new YouTubeLearningAssistantApp({ requestHandler: async () => ({
+      ok: false, status: 429, code: 'RATE_LIMITED', error: 'Gemini API Error (429): rate limit'
+    }) });
+    app.videoController.isSessionValid = () => true;
+    app.currentVideoId = 'rate-limited-video';
+    app.sessionEpoch = 4;
+    app.videoMetadata = { title: 'Test' };
+    app.subtitleManager.primaryTrack = { languageCode: 'en', name: 'English' };
+    app.settings = { vocabularyLevel: 'B1', vocabularyTranslationLanguage: 'English' };
+    await app.prepareVideoVocabulary('rate-limited-video', 4, [
+      { start: 0, text: 'An unusually resilient structure.' }
+    ]);
+    assert.strictEqual(app.uiManager.vocabularyState, 'error');
+    assert.ok(app.uiManager.vocabularyMessage.includes('rate-limited'));
+    assert.strictEqual(app.vocabulary.length, 0);
+  });
+
+  await test('Missing original transcript reports no cues instead of inventing vocabulary', async () => {
+    const app = new YouTubeLearningAssistantApp({ requestHandler: async () => ({ ok: true }) });
+    app.videoMetadata = { captionTracks: [] };
+    app.subtitleManager.primaryCues = [];
+    app.subtitleManager.primaryTrack = null;
+    const cues = await app.getOriginalTranscriptCues({ primaryCues: [], cues: [] });
+    assert.deepStrictEqual(cues, []);
+  });
+
+  await test('Empty vocabulary UI shows the real error and does not report a completed lesson', () => {
+    const originalDocument = globalThis.document;
+    const body = {};
+    globalThis.document = { body, fullscreenElement: null, createElement: () => ({ parentElement: body, querySelector: () => null }) };
     try {
       const ui = new UIManager({});
-      ui.rootContainer = {
-        innerHTML: '',
-        querySelector: () => null,
-        appendChild: (el) => { appendedToast = el; }
-      };
-
-      ui.showQuickGlanceToast([
-        { word: 'Danke', meaning: 'Thank you' }
-      ]);
-
-      assert.ok(appendedToast, 'Toast appended to container');
-      assert.ok(appendedToast.innerHTML.includes('1 New Words in Original Language'));
-      assert.ok(appendedToast.innerHTML.includes('Quick glance before diving into the video'));
+      ui.rootContainer = { parentElement: body, innerHTML: '', appendChild(element) { this.child = element; } };
+      ui.vocabularyPrepGate = true;
+      ui.setVocabularyStatus('error', 'Gemini request failed. Add your key or continue.');
+      ui.showVocabularyDrawer();
+      assert.ok(ui.rootContainer.child.innerHTML.includes('Couldn’t prepare the word cards'));
+      assert.ok(ui.rootContainer.child.innerHTML.includes('Gemini request failed'));
+      assert.ok(ui.rootContainer.child.innerHTML.includes('Start watching'));
+      assert.ok(!ui.rootContainer.child.innerHTML.includes('Ready for the video.'));
     } finally {
-      globalThis.document = origDoc;
+      globalThis.document = originalDocument;
     }
   });
 

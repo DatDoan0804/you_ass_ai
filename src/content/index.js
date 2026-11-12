@@ -437,6 +437,7 @@ export class YouTubeLearningAssistantApp {
   }
 
   async handleVideoChanged({ videoId, sessionEpoch, metadata }) {
+    this.log(`[Vocabulary] Video change received: videoId=${videoId || '(none)'}, epoch=${sessionEpoch}, metadata=${Boolean(metadata)}`);
     this.currentVideoId = videoId;
     this.sessionEpoch = sessionEpoch;
     this.videoMetadata = metadata || { videoId, chapters: [], captionTracks: [] };
@@ -511,12 +512,25 @@ export class YouTubeLearningAssistantApp {
       this.settings.secondarySubtitleLang = demandSecondaryLang;
     }
 
-    const subtitleResult = await this.subtitleManager.loadSubtitlesForVideo(
-      this.videoMetadata,
-      this.settings.primarySubtitleLang || 'auto',
-      demandSecondaryLang,
-      { enableDualSubtitles: this.settings.enableDualSubtitles !== false }
-    );
+    let subtitleResult;
+    let subtitleLoadError = null;
+    try {
+      subtitleResult = await this.subtitleManager.loadSubtitlesForVideo(
+        this.videoMetadata,
+        this.settings.primarySubtitleLang || 'auto',
+        demandSecondaryLang,
+        { enableDualSubtitles: this.settings.enableDualSubtitles !== false }
+      );
+      const cueTextLength = (subtitleResult?.cues || []).reduce((total, cue) => total + String(cue.text || '').length, 0);
+      this.log(`[Vocabulary] Subtitle load complete for ${videoId}: hasSubtitles=${Boolean(subtitleResult?.hasSubtitles)}, cues=${subtitleResult?.cues?.length || 0}, chars=${cueTextLength}, primaryCues=${subtitleResult?.primaryCues?.length || 0}, tracks=${subtitleResult?.availableTracks?.length || 0}`);
+    } catch (err) {
+      subtitleLoadError = err;
+      this.log(`[Vocabulary] Subtitle extraction failed for ${videoId}: ${err.message}`);
+      subtitleResult = { hasSubtitles: false, cues: [], chunks: [], primaryCues: [], availableTracks: [] };
+      if (this.vocabularyPrepGate) {
+        this.uiManager.setVocabularyStatus('error', `Could not read this video’s captions (${err.message}). You can add words yourself or continue.`);
+      }
+    }
     this.lastSubtitleResult = subtitleResult;
 
     if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
@@ -540,10 +554,22 @@ export class YouTubeLearningAssistantApp {
     }
 
     if (this.vocabularyPrepGate) {
-      const originalCues = await this.getOriginalTranscriptCues(subtitleResult);
+      let originalCues = [];
+      let originalTranscriptError = null;
+      try {
+        originalCues = await this.getOriginalTranscriptCues(subtitleResult);
+      } catch (err) {
+        originalTranscriptError = err;
+        this.log(`[Vocabulary] Original transcript extraction failed for ${videoId}: ${err.message}`);
+      }
       if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+      const originalChars = originalCues.reduce((total, cue) => total + String(cue.text || '').length, 0);
+      this.log(`[Vocabulary] Original transcript ready for ${videoId}: cues=${originalCues.length}, chars=${originalChars}`);
       if (originalCues.length > 0) {
         await this.prepareVideoVocabulary(videoId, sessionEpoch, originalCues);
+      } else if (subtitleLoadError || originalTranscriptError) {
+        const error = subtitleLoadError || originalTranscriptError;
+        this.uiManager.setVocabularyStatus('error', `Could not extract this video’s transcript (${error.message}). You can add words yourself or continue.`);
       } else {
         this.uiManager.setVocabularyStatus(
           'unavailable',
@@ -608,7 +634,9 @@ export class YouTubeLearningAssistantApp {
   }
 
   async getOriginalTranscriptCues(subtitleResult = {}) {
-    const cachedPrimary = subtitleResult.primaryCues || this.subtitleManager.primaryCues || [];
+    const cachedPrimary = (subtitleResult.primaryCues?.length > 0 && subtitleResult.primaryCues) ||
+      (this.subtitleManager.primaryCues?.length > 0 && this.subtitleManager.primaryCues) || [];
+    this.log(`[Vocabulary] Checking original transcript sources: cachedPrimary=${cachedPrimary.length}, metadataTracks=${this.videoMetadata?.captionTracks?.length || 0}`);
     if (Array.isArray(cachedPrimary) && cachedPrimary.length > 0) return cachedPrimary;
 
     const tracks = this.videoMetadata?.captionTracks || [];
@@ -617,13 +645,19 @@ export class YouTubeLearningAssistantApp {
     const candidate = (selected?.baseUrl && tracks.find((track) => track.baseUrl === selected.baseUrl)) ||
       SubtitleManager.selectBestTrack(tracks, preferred) ||
       tracks.find((track) => track.baseUrl);
-    if (!candidate?.baseUrl) return [];
+    if (!candidate?.baseUrl) {
+      this.log('[Vocabulary] No fetchable original caption track found.');
+      return [];
+    }
 
     try {
-      return await this.subtitleManager.fetchAndParseTrack(candidate.baseUrl);
+      this.log(`[Vocabulary] Fetching original caption track language=${candidate.languageCode || 'unknown'}, kind=${candidate.kind || 'manual'}`);
+      const cues = await this.subtitleManager.fetchAndParseTrack(candidate.baseUrl);
+      this.log(`[Vocabulary] Original caption fetch parsed ${cues.length} cues.`);
+      return cues;
     } catch (err) {
       this.log(`[Vocabulary] Could not load the original caption track: ${err.message}`);
-      return [];
+      throw err;
     }
   }
 
@@ -647,9 +681,10 @@ export class YouTubeLearningAssistantApp {
     const transcript = cues.map((cue) => cue.normalized).join(' ');
     const seen = new Set();
     const validated = [];
+    const rejected = { malformed: 0, wordNotInTranscript: 0, exampleNotInTranscript: 0, duplicate: 0 };
 
     for (const raw of rawItems) {
-      if (!raw || typeof raw !== 'object') continue;
+      if (!raw || typeof raw !== 'object') { rejected.malformed++; continue; }
       const word = typeof raw.word === 'string' ? raw.word.trim() : '';
       const translation = typeof raw.translation === 'string' ? raw.translation.trim() : '';
       const explanation = typeof raw.explanation === 'string' ? raw.explanation.trim() : '';
@@ -658,10 +693,10 @@ export class YouTubeLearningAssistantApp {
       const normalizedWord = normalize(word);
       const normalizedExample = normalize(example);
       const isCjk = /[\u3040-\u30ff\u3400-\u9fff]/u.test(normalizedWord);
-      if (!word || !translation || !explanation || !example || !contextualMeaning) continue;
-      if (normalizedWord.length < (isCjk ? 1 : 2) || !containsPhrase(transcript, normalizedWord)) continue;
-      if (normalizedExample.length < (isCjk ? 3 : 8) || !transcript.includes(normalizedExample)) continue;
-      if (seen.has(normalizedWord)) continue;
+      if (!word || !translation || !explanation || !example || !contextualMeaning) { rejected.malformed++; continue; }
+      if (normalizedWord.length < (isCjk ? 1 : 2) || !containsPhrase(transcript, normalizedWord)) { rejected.wordNotInTranscript++; continue; }
+      if (normalizedExample.length < (isCjk ? 3 : 8) || !transcript.includes(normalizedExample)) { rejected.exampleNotInTranscript++; continue; }
+      if (seen.has(normalizedWord)) { rejected.duplicate++; continue; }
       seen.add(normalizedWord);
 
       const matchingCues = cues.filter((cue) => containsPhrase(cue.normalized, normalizedWord));
@@ -683,7 +718,7 @@ export class YouTubeLearningAssistantApp {
       });
       if (validated.length >= 8) break;
     }
-    return validated;
+    return { words: validated, received: rawItems.length, rejected };
   }
 
   async prepareVideoVocabulary(videoId, sessionEpoch, transcriptCues) {
@@ -713,7 +748,11 @@ export class YouTubeLearningAssistantApp {
         cacheKey,
         promptSpec
       });
-      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
+      this.log(`[Vocabulary] Gemini vocabulary request returned for ${videoId}: ok=${Boolean(response?.ok)}, cached=${Boolean(response?.cached)}, error=${response?.error || 'none'}, code=${response?.code || 'none'}`);
+      if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
+        this.log(`[Vocabulary] Ignoring stale Gemini response for ${videoId} at epoch ${sessionEpoch}.`);
+        return;
+      }
       if (!response?.ok) {
         const error = new Error(response?.error || 'Vocabulary service unavailable.');
         error.status = response?.status;
@@ -722,7 +761,9 @@ export class YouTubeLearningAssistantApp {
         throw error;
       }
 
-      const words = YouTubeLearningAssistantApp.validateVocabularyResponse(response.data, transcriptCues);
+      const validation = YouTubeLearningAssistantApp.validateVocabularyResponse(response.data, transcriptCues);
+      const words = validation.words;
+      this.log(`[Vocabulary] Validation for ${videoId}: received=${validation.received}, accepted=${words.length}, rejected=${JSON.stringify(validation.rejected)}`);
       this.vocabulary = words;
       this.uiManager.setVocabulary(words);
       if (words.length > 0) {
