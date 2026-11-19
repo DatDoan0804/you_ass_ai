@@ -12,10 +12,10 @@ const DB_NAME = 'YouTubeAILearningAssistantDB';
 const DB_VERSION = 1;
 
 export const DEFAULT_SETTINGS = {
-  enabled: true,
+  enabled: false,
   provider: 'gemini', // 'gemini' | 'openai-compatible'
   apiKey: '',
-  model: 'gemini-3.8-flash',
+  model: 'gemini-3.5-flash-lite',
   customEndpoint: 'http://localhost:11434/v1/chat/completions',
   breakFrequency: 'medium', // 'low' | 'medium' | 'high'
   minIntervalSeconds: 300, // 5 minutes default minimum interval
@@ -27,9 +27,7 @@ export const DEFAULT_SETTINGS = {
   skipMinorActivities: false,
   enableNonEducationalIntervention: true, // Redirects to YouTube home after ~5 mins of actual playback on non-educational videos
   enableDualSubtitles: true, // Companion Subtitle overlay (displayed alongside YouTube native captions)
-  enableVocabularyPrep: true,
-  vocabularyTranslationLanguage: 'English',
-  vocabularyLevel: 'B1', // CEFR level A1-C2
+  enableVocabularyPrep: false,
   primarySubtitleLang: 'auto', // 'auto' | language code
   secondarySubtitleLang: 'en', // default translation / companion language downloaded on demand
   subtitleFontSize: 'medium', // 'small' | 'medium' | 'large'
@@ -289,7 +287,7 @@ export class Database {
           const raw = localStorage.getItem('yt_ai_learning_settings');
           const parsed = raw ? JSON.parse(raw) : {};
           if (parsed.model === 'gemini-2.5-flash') {
-            parsed.model = 'gemini-3.8-flash';
+            parsed.model = 'gemini-3.5-flash-lite';
           }
           if (parsed.minIntervalSeconds === 90 || parsed.minIntervalSeconds === 45) {
             parsed.minIntervalSeconds = 300;
@@ -310,7 +308,7 @@ export class Database {
         if (res && res.yt_ai_learning_settings) {
           const stored = { ...res.yt_ai_learning_settings };
           if (stored.model === 'gemini-2.5-flash') {
-            stored.model = 'gemini-3.8-flash';
+            stored.model = 'gemini-3.5-flash-lite';
           }
           if (stored.minIntervalSeconds === 90 || stored.minIntervalSeconds === 45) {
             stored.minIntervalSeconds = 300;
@@ -329,7 +327,7 @@ export class Database {
           .then((res) => {
             const stored = res && res.yt_ai_learning_settings ? { ...res.yt_ai_learning_settings } : {};
             if (stored.model === 'gemini-2.5-flash') {
-              stored.model = 'gemini-3.8-flash';
+              stored.model = 'gemini-3.5-flash-lite';
             }
             if (stored.minIntervalSeconds === 90 || stored.minIntervalSeconds === 45) {
               stored.minIntervalSeconds = 300;

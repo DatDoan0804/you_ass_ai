@@ -24,6 +24,15 @@
  */
 
 import { ActivityGenerator } from '../ai/activity-generator.js';
+import { TemplateLoader } from './template-loader.js';
+import { html, mountComponent } from './components/render-helper.js';
+import { DedicatedBar } from './components/DedicatedBar.js';
+import { VocabularyDrawer } from './components/VocabularyDrawer.js';
+import { ActivityOverlay } from './components/ActivityOverlay.js';
+import { SettingsDrawer } from './components/SettingsDrawer.js';
+import { DashboardDrawer } from './components/DashboardDrawer.js';
+import { DualSubtitles } from './components/DualSubtitles.js';
+import { TimelineMarkers } from './components/TimelineMarkers.js';
 
 export class UIManager {
   /**
@@ -154,10 +163,19 @@ export class UIManager {
   }
 
   ensureOverlayHost() {
-    if (!this.rootContainer || typeof document === 'undefined') return;
+    if (typeof document === 'undefined') return;
+    if (!this.rootContainer && typeof document.createElement === 'function') {
+      const existing = typeof document.getElementById === 'function'
+        ? document.getElementById('yt-learn-assistant-root')
+        : null;
+      this.rootContainer = existing || document.createElement('div');
+      this.rootContainer.id = 'yt-learn-assistant-root';
+      this.rootContainer.className = 'yt-learn-assistant-root';
+    }
+    if (!this.rootContainer) return;
     const fsElement = document.fullscreenElement || document.webkitFullscreenElement;
     const targetParent = fsElement || document.body;
-    if (this.rootContainer.parentElement !== targetParent) {
+    if (targetParent && this.rootContainer.parentElement !== targetParent && typeof targetParent.appendChild === 'function') {
       targetParent.appendChild(this.rootContainer);
     }
   }
@@ -224,159 +242,226 @@ export class UIManager {
     if (!this.barContainer) return;
     this.mountDedicatedBarInSafeSlot();
 
-    const s = this.settings || {};
-    const isEnabled = s.enabled !== false;
-    const cls = this.videoClassification;
+    const isInsidePlayer =
+      this.barContainer.classList?.contains?.('floating-top-dock') ||
+      Boolean(this.barContainer.closest?.('#movie_player, .html5-video-player')) ||
+      Boolean(typeof document !== 'undefined' && (document.fullscreenElement || document.webkitFullscreenElement));
 
     if (this.barCollapsed) {
-      this.barContainer.classList.add('is-collapsed');
-      this.barContainer.innerHTML = `
-        <div class="yt-learn-bar-collapsed-inner">
-          <button class="yt-learn-fab yt-learn-collapsed-btn" id="yt-learn-expand-bar-btn" title="Expand AI Tutor Bar">
-            <span class="yt-learn-status-dot ${isEnabled ? this.statusState : 'disabled'}"></span>
-            <span>🎓 AI Tutor: <strong>${isEnabled ? this.escapeHtml(this.statusText) : 'Off'}</strong></span>
-            <span style="font-size:10px;margin-left:4px;opacity:0.8;">▲ Expand</span>
-          </button>
-        </div>
-      `;
-      this.barContainer.querySelector('#yt-learn-expand-bar-btn')?.addEventListener('click', () => {
+      this.barContainer.classList?.add?.('is-collapsed');
+    } else {
+      this.barContainer.classList?.remove?.('is-collapsed');
+    }
+
+    const vnode = html`<${DedicatedBar}
+      barCollapsed=${this.barCollapsed}
+      statusText=${this.statusText}
+      statusState=${this.statusState}
+      settings=${this.settings}
+      videoClassification=${this.videoClassification}
+      userClassificationOverride=${this.userClassificationOverride}
+      localServerConnected=${this.localServerConnected}
+      vocabulary=${this.vocabulary}
+      availableTracks=${this.availableTracks}
+      activePanel=${this.activePanel}
+      onToggleCollapse=${() => {
+        this.barCollapsed = !this.barCollapsed;
+        this.renderDedicatedBar();
+      }}
+      onToggleAi=${async () => {
+        if (this.statusText === 'No Captions or Chapters' && typeof this.callbacks.onRetryMetadataCheck === 'function') {
+          this.setStatus('Checking...', 'preparing');
+          this.callbacks.onRetryMetadataCheck();
+          return;
+        }
+        const isEnabled = this.settings.enabled !== false;
+        const nextEnabled = !isEnabled;
+        this.settings.enabled = nextEnabled;
+        if (!nextEnabled) {
+          this.clearDualSubtitles();
+        }
+        await this.callbacks.onSaveSettings({ enabled: nextEnabled });
+        this.setStatus(nextEnabled ? 'Active' : 'Paused', nextEnabled ? 'ready' : 'disabled');
+      }}
+      onToggleDualSubs=${async () => {
+        const nextDual = this.settings.enableDualSubtitles === false;
+        this.settings.enableDualSubtitles = nextDual;
+        if (!nextDual) {
+          this.clearDualSubtitles();
+        }
+        this.renderDedicatedBar();
+        await this.callbacks.onSaveSettings({ enableDualSubtitles: nextDual });
+        if (!nextDual) {
+          this.clearDualSubtitles();
+        }
+      }}
+      onSelectSub1=${async (val) => {
+        this.settings.primarySubtitleLang = val;
+        await this.callbacks.onSaveSettings({ primarySubtitleLang: val });
+      }}
+      onSelectSub2=${(val) => {
+        this.settings.secondarySubtitleLang = val;
+        if (this._sub2ChangeTimer) clearTimeout(this._sub2ChangeTimer);
+        this._sub2ChangeTimer = setTimeout(async () => {
+          await this.callbacks.onSaveSettings({ secondarySubtitleLang: val });
+        }, 300);
+      }}
+      onToggleVocab=${() => {
+        if (this.activePanel === 'vocabulary') {
+          if (!this.vocabularyPrepGate) this.closeOverlay();
+        } else {
+          if (typeof this.callbacks.onOpenVocabulary === 'function') {
+            this.callbacks.onOpenVocabulary();
+          }
+          this.showVocabularyDrawer();
+        }
+      }}
+      onManualTrigger=${() => {
+        this.callbacks.onManualTriggerActivity();
+      }}
+      onOpenDashboard=${() => {
+        if (this.activePanel === 'dashboard') {
+          this.closeOverlay();
+        } else {
+          this.showDashboardDrawer();
+        }
+      }}
+      onOpenSettings=${() => {
+        if (this.activePanel === 'settings') {
+          this.closeOverlay();
+        } else {
+          this.showSettingsDrawer();
+        }
+      }}
+      onOverrideClassification=${() => {
+        if (typeof this.callbacks.onOverrideClassification === 'function') {
+          const nextOverride = !this.userClassificationOverride;
+          this.callbacks.onOverrideClassification(nextOverride);
+        }
+      }}
+      onRetryMetadataCheck=${() => {
+        if (typeof this.callbacks.onRetryMetadataCheck === 'function') {
+          this.setStatus('Checking...', 'preparing');
+          this.callbacks.onRetryMetadataCheck();
+        }
+      }}
+      onBackgroundClick=${() => {
+        if (isInsidePlayer) {
+          this.barCollapsed = true;
+          this.renderDedicatedBar();
+        }
+      }}
+    />`;
+
+    mountComponent(vnode, this.barContainer);
+
+    // In real browser DOM (nodeType === 1), Preact already binds and manages all event listeners
+    // directly on VNodes. Only attach fallback DOM listeners if running on a plain mock object (e.g. Node tests).
+    const isPlainMock = !this.barContainer || typeof this.barContainer.nodeType !== 'number';
+    if (isPlainMock) {
+      this.barContainer.querySelector?.('#yt-learn-expand-bar-btn')?.addEventListener?.('click', () => {
         this.barCollapsed = false;
         this.renderDedicatedBar();
       });
-      return;
+
+      this.barContainer.querySelector?.('#yt-learn-dual-subs-btn')?.addEventListener?.('click', async () => {
+        const nextDual = this.settings.enableDualSubtitles === false;
+        this.settings.enableDualSubtitles = nextDual;
+        if (!nextDual) {
+          this.clearDualSubtitles();
+        }
+        this.renderDedicatedBar();
+        await this.callbacks.onSaveSettings({ enableDualSubtitles: nextDual });
+        if (!nextDual) {
+          this.clearDualSubtitles();
+        }
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-sub1-select')?.addEventListener?.('change', async (e) => {
+        const val = e.target.value;
+        this.settings.primarySubtitleLang = val;
+        await this.callbacks.onSaveSettings({ primarySubtitleLang: val });
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-sub2-select')?.addEventListener?.('change', (e) => {
+        const val = e.target.value;
+        this.settings.secondarySubtitleLang = val;
+        if (this._sub2ChangeTimer) clearTimeout(this._sub2ChangeTimer);
+        this._sub2ChangeTimer = setTimeout(async () => {
+          await this.callbacks.onSaveSettings({ secondarySubtitleLang: val });
+        }, 300);
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-toggle-btn')?.addEventListener?.('click', async () => {
+        if (this.statusText === 'No Captions or Chapters' && typeof this.callbacks.onRetryMetadataCheck === 'function') {
+          this.setStatus('Checking...', 'preparing');
+          this.callbacks.onRetryMetadataCheck();
+          return;
+        }
+        const isEnabled = this.settings.enabled !== false;
+        const nextEnabled = !isEnabled;
+        this.settings.enabled = nextEnabled;
+        if (!nextEnabled) {
+          this.clearDualSubtitles();
+        }
+        await this.callbacks.onSaveSettings({ enabled: nextEnabled });
+        this.setStatus(nextEnabled ? 'Active' : 'Paused', nextEnabled ? 'ready' : 'disabled');
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-collapse-bar-btn')?.addEventListener?.('click', () => {
+        this.barCollapsed = true;
+        this.renderDedicatedBar();
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-classification-btn')?.addEventListener?.('click', () => {
+        if (typeof this.callbacks.onOverrideClassification === 'function') {
+          const nextOverride = !this.userClassificationOverride;
+          this.callbacks.onOverrideClassification(nextOverride);
+        }
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-vocab-btn')?.addEventListener?.('click', () => {
+        if (this.activePanel === 'vocabulary') {
+          if (!this.vocabularyPrepGate) this.closeOverlay();
+        } else {
+          if (typeof this.callbacks.onOpenVocabulary === 'function') {
+            this.callbacks.onOpenVocabulary();
+          }
+          this.showVocabularyDrawer();
+        }
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-now-btn')?.addEventListener?.('click', () => {
+        this.callbacks.onManualTriggerActivity();
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-dashboard-btn')?.addEventListener?.('click', () => {
+        if (this.activePanel === 'dashboard') {
+          this.closeOverlay();
+        } else {
+          this.showDashboardDrawer();
+        }
+      });
+
+      this.barContainer.querySelector?.('#yt-learn-settings-btn')?.addEventListener?.('click', () => {
+        if (this.activePanel === 'settings') {
+          this.closeOverlay();
+        } else {
+          this.showSettingsDrawer();
+        }
+      });
     }
 
-    this.barContainer.classList.remove('is-collapsed');
+    this.barContainer.onclick = (event) => {
+      if (this.barCollapsed) return;
+      const targetEl = event.target?.nodeType === 3 ? event.target.parentElement : event.target;
+      if (targetEl?.closest?.('button, select, option, input, a, label')) return;
 
-    let classificationBadgeHtml = '';
-    if (cls) {
-      const catLower = String(cls.category || 'Educational').toLowerCase();
-      const isPausedForEnt = !cls.shouldActivateLearning && !this.userClassificationOverride;
-      const overrideLabel = isPausedForEnt
-        ? ' (Intervention Active — Click to Enable Learning)'
-        : this.userClassificationOverride
-        ? ' (User Override)'
-        : '';
-
-      classificationBadgeHtml = `
-        <button class="yt-learn-classification-pill cat-${catLower}" id="yt-learn-classification-btn"
-          title="${this.escapeHtml(`${cls.reasoning} | Learning Potential: ${cls.learningPotential}`)}">
-          <span>🎓 ${this.escapeHtml(cls.category)}: <strong>${cls.educationalValue}/100</strong>${overrideLabel}</span>
-        </button>
-      `;
-    }
-
-    this.barContainer.innerHTML = `
-      <div class="yt-learn-bar-left">
-        <button class="yt-learn-fab" id="yt-learn-toggle-btn" title="Click to toggle AI Learning Assistant">
-          <span class="yt-learn-status-dot ${isEnabled ? this.statusState : 'disabled'}"></span>
-          <span>AI Tutor: <strong>${isEnabled ? this.escapeHtml(this.statusText) : 'Off'}</strong></span>
-        </button>
-        ${classificationBadgeHtml}
-      </div>
-      <div class="yt-learn-bar-right">
-        <div class="yt-learn-dual-subs-group">
-          <button class="yt-learn-icon-btn ${s.enableDualSubtitles !== false ? 'active-toggle' : ''}" id="yt-learn-dual-subs-btn" title="Toggle 2nd Subtitle on/off (displayed alongside YouTube native subtitles)${this.localServerConnected ? ' [🖥️ Terminal Server Connected]' : ''}">💬 2nd Sub: <strong>${s.enableDualSubtitles !== false ? 'ON' : 'Off'}</strong>${this.localServerConnected ? ' <span class="yt-learn-server-badge" title="Local Subtitle Server connected in terminal">🖥️</span>' : ''}</button>
-          ${s.enableDualSubtitles !== false ? `
-            <select class="yt-learn-sub-dropdown yt-learn-sub2-dropdown" id="yt-learn-sub2-select" title="2nd Subtitle Language (Downloaded on demand from YouTube)">
-              ${this.buildSub2OptionsHtml(s.secondarySubtitleLang || 'en')}
-            </select>
-            <select class="yt-learn-sub-dropdown yt-learn-sub1-dropdown" id="yt-learn-sub1-select" style="display:none;" title="Main Subtitle Track">
-              ${this.buildSub1OptionsHtml(s.primarySubtitleLang || 'auto')}
-            </select>
-          ` : ''}
-        </div>
-        <button class="yt-learn-icon-btn yt-learn-vocab-btn ${this.vocabulary.length > 0 ? 'active-vocab' : ''}" id="yt-learn-vocab-btn" title="Practice the video's vocabulary before watching">📖 Prep vocab${this.vocabulary.length > 0 ? ` <strong>(${this.vocabulary.length})</strong>` : ''}</button>
-        <button class="yt-learn-icon-btn" id="yt-learn-now-btn" title="Generate activity for current section now">⚡ Quiz Now</button>
-        <button class="yt-learn-icon-btn" id="yt-learn-dashboard-btn" title="Learning Profile & Activity History">📊 Progress</button>
-        <button class="yt-learn-icon-btn" id="yt-learn-settings-btn" title="Assistant Settings & API Key">⚙️ Settings</button>
-        <button class="yt-learn-icon-btn yt-learn-collapse-bar-btn" id="yt-learn-collapse-bar-btn" title="Collapse Bar to Mini Pill">▾</button>
-      </div>
-    `;
-
-    this.barContainer.querySelector('#yt-learn-dual-subs-btn')?.addEventListener('click', async () => {
-      const nextDual = this.settings.enableDualSubtitles === false;
-      this.settings.enableDualSubtitles = nextDual;
-      if (!nextDual) {
-        this.clearDualSubtitles();
+      if (isInsidePlayer) {
+        this.barCollapsed = true;
+        this.renderDedicatedBar();
       }
-      this.renderDedicatedBar();
-      await this.callbacks.onSaveSettings({ enableDualSubtitles: nextDual });
-      if (!nextDual) {
-        this.clearDualSubtitles();
-      }
-    });
-
-    this.barContainer.querySelector('#yt-learn-sub1-select')?.addEventListener('change', async (e) => {
-      const val = e.target.value;
-      this.settings.primarySubtitleLang = val;
-      await this.callbacks.onSaveSettings({ primarySubtitleLang: val });
-    });
-
-    let sub2ChangeTimer = null;
-    this.barContainer.querySelector('#yt-learn-sub2-select')?.addEventListener('change', (e) => {
-      const val = e.target.value;
-      this.settings.secondarySubtitleLang = val;
-      if (sub2ChangeTimer) clearTimeout(sub2ChangeTimer);
-      sub2ChangeTimer = setTimeout(async () => {
-        await this.callbacks.onSaveSettings({ secondarySubtitleLang: val });
-      }, 300);
-    });
-
-    this.barContainer.querySelector('#yt-learn-toggle-btn')?.addEventListener('click', async () => {
-      if (this.statusText === 'No Captions or Chapters' && typeof this.callbacks.onRetryMetadataCheck === 'function') {
-        this.setStatus('Checking...', 'preparing');
-        this.callbacks.onRetryMetadataCheck();
-        return;
-      }
-      const nextEnabled = !isEnabled;
-      this.settings.enabled = nextEnabled;
-      if (!nextEnabled) {
-        this.clearDualSubtitles();
-      }
-      await this.callbacks.onSaveSettings({ enabled: nextEnabled });
-      this.setStatus(nextEnabled ? 'Active' : 'Paused', nextEnabled ? 'ready' : 'disabled');
-    });
-
-    this.barContainer.querySelector('#yt-learn-collapse-bar-btn')?.addEventListener('click', () => {
-      this.barCollapsed = true;
-      this.renderDedicatedBar();
-    });
-
-    this.barContainer.querySelector('#yt-learn-classification-btn')?.addEventListener('click', () => {
-      if (typeof this.callbacks.onOverrideClassification === 'function') {
-        const nextOverride = !this.userClassificationOverride;
-        this.callbacks.onOverrideClassification(nextOverride);
-      }
-    });
-
-    this.barContainer.querySelector('#yt-learn-vocab-btn')?.addEventListener('click', () => {
-      if (this.activePanel === 'vocabulary') {
-        if (!this.vocabularyPrepGate) this.closeOverlay();
-      } else {
-        this.showVocabularyDrawer();
-      }
-    });
-
-    this.barContainer.querySelector('#yt-learn-now-btn')?.addEventListener('click', () => {
-      this.callbacks.onManualTriggerActivity();
-    });
-
-    this.barContainer.querySelector('#yt-learn-dashboard-btn')?.addEventListener('click', () => {
-      if (this.activePanel === 'dashboard') {
-        this.closeOverlay();
-      } else {
-        this.showDashboardDrawer();
-      }
-    });
-
-    this.barContainer.querySelector('#yt-learn-settings-btn')?.addEventListener('click', () => {
-      if (this.activePanel === 'settings') {
-        this.closeOverlay();
-      } else {
-        this.showSettingsDrawer();
-      }
-    });
+    };
   }
 
   // ===========================================================================
@@ -600,57 +685,35 @@ export class UIManager {
     const barWidthPx = barRect && barRect.width > 0 ? barRect.width : 800;
     const safeBottomPx = UIManager.computeSafePopupBottomOffsetPx(progressBar);
 
-    for (const bp of this.cachedBreakpoints) {
-      const ts = Number(bp.timestamp);
-      if (!Number.isFinite(ts) || ts < 0 || ts > duration) continue;
+    const vnode = html`<${TimelineMarkers}
+      breakpoints=${this.cachedBreakpoints}
+      duration=${duration}
+      triggeredIds=${this.cachedTriggeredIds}
+      barWidthPx=${barWidthPx}
+      safeBottomPx=${safeBottomPx}
+      onSeek=${(ts) => {
+        const bp = this.cachedBreakpoints.find((b) => Math.abs(b.timestamp - ts) < 0.1);
+        if (bp && typeof this.callbacks.onTimelineMarkerClick === 'function') {
+          this.callbacks.onTimelineMarkerClick(bp);
+        }
+      }}
+    />`;
 
-      const rawPct = (ts / duration) * 100;
-      const clampedPct = Math.max(0.5, Math.min(99.5, rawPct));
+    mountComponent(vnode, layer);
 
-      const strength = bp.strength || 'normal';
-      const isCompleted = this.cachedTriggeredIds.has(bp.id);
-      const formattedTime = UIManager.formatTimestamp(ts);
-      const conceptLabel =
-        bp.activity?.conceptName || bp.reason || 'Learning Breakpoint';
-      const activityBadge = this.formatActivityType(bp.activity?.type || 'check');
-
-      const { alignClass, shiftPx } = UIManager.computePopupAlignment(
-        clampedPct,
-        barWidthPx,
-        240
-      );
-
-      const marker = document.createElement('div');
-      marker.className = `yt-learn-timeline-marker strength-${strength}${isCompleted ? ' completed' : ''}`;
-      marker.style.left = `${clampedPct.toFixed(3)}%`;
-      marker.dataset.breakpointId = bp.id;
-      marker.dataset.timestamp = String(ts);
-      marker.dataset.popupAlign = alignClass;
-      marker.setAttribute(
-        'aria-label',
-        `Learning breakpoint at ${formattedTime}: ${conceptLabel}`
-      );
-
-      marker.innerHTML = `
-        <div class="yt-learn-marker-tooltip ${alignClass}" style="--tooltip-shift-x: ${shiftPx}px; --yt-learn-popup-bottom: ${safeBottomPx}px;">
-          <span class="yt-learn-marker-tooltip-time">${this.escapeHtml(formattedTime)}</span>
-          <span class="yt-learn-marker-tooltip-type">${this.escapeHtml(activityBadge)}</span>
-          <span>${this.escapeHtml(conceptLabel)}</span>
-        </div>
-      `;
-
-      // Direct hover detection: Only trigger when cursor is directly over this marker
+    // Direct hover and click listeners for rendered markers
+    layer.querySelectorAll?.('.yt-learn-timeline-marker')?.forEach?.((marker) => {
       marker.addEventListener('pointerenter', () => {
         const dynamicSafeBottom = UIManager.computeSafePopupBottomOffsetPx(progressBar);
-        const tooltip = marker.querySelector('.yt-learn-marker-tooltip');
-        if (tooltip) {
+        const tooltip = marker.querySelector?.('.yt-learn-marker-tooltip');
+        if (tooltip && tooltip.style) {
           tooltip.style.setProperty('--yt-learn-popup-bottom', `${dynamicSafeBottom}px`);
         }
-        marker.classList.add('hover-active');
+        marker.classList?.add?.('hover-active');
       });
 
       marker.addEventListener('pointerleave', () => {
-        marker.classList.remove('hover-active');
+        marker.classList?.remove?.('hover-active');
       });
 
       const stopDrag = (ev) => {
@@ -662,13 +725,13 @@ export class UIManager {
       marker.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        if (typeof this.callbacks.onTimelineMarkerClick === 'function') {
+        const bpId = marker.dataset?.breakpointId;
+        const bp = this.cachedBreakpoints.find((b) => b.id === bpId);
+        if (bp && typeof this.callbacks.onTimelineMarkerClick === 'function') {
           this.callbacks.onTimelineMarkerClick(bp);
         }
       });
-
-      layer.appendChild(marker);
-    }
+    });
   }
 
   static formatTimestamp(seconds) {
@@ -687,25 +750,19 @@ export class UIManager {
   // ===========================================================================
 
   showOptionalActivityToast(activity, onAccept) {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
     this.ensureOverlayHost();
     this.closeOverlay();
     const toast = document.createElement('div');
     toast.className = 'yt-learn-toast';
-    toast.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-        <span class="yt-learn-badge">${this.formatActivityType(activity.type)}</span>
-        <button class="yt-learn-btn-ghost" id="yt-learn-toast-dismiss" style="border:none;cursor:pointer;">✕</button>
-      </div>
-      <div style="font-weight:600;font-size:13.5px;margin-bottom:10px;">
-        Ready to check your understanding of "${this.escapeHtml(activity.conceptName)}"?
-      </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-toast-skip">Skip</button>
-        <button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-toast-open">Pause & Start</button>
-      </div>
-    `;
+    toast.innerHTML = TemplateLoader.render('activity-toast.html', {
+      typeLabel: this.escapeHtml(this.formatActivityType(activity.type)),
+      conceptName: this.escapeHtml(activity.conceptName)
+    });
 
-    this.rootContainer.appendChild(toast);
+    if (this.rootContainer?.appendChild) {
+      this.rootContainer.appendChild(toast);
+    }
 
     const dismiss = () => {
       if (toast.isConnected) toast.remove();
@@ -728,218 +785,48 @@ export class UIManager {
     this.ensureOverlayHost();
     this.activePanel = 'activity';
     this.activeActivityId = activity.id;
+    this.activeActivity = activity;
     this.isSubmitting = false;
-    this.rootContainer.innerHTML = '';
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'yt-learn-overlay-backdrop';
-    wrapper.dataset.activityId = activity.id;
+    const vnode = html`<${ActivityOverlay}
+      activity=${activity}
+      restoredAnswer=${restoredAnswer}
+      onClose=${() => {
+        if (this.isSubmitting) return;
+        this.closeOverlay();
+        this.callbacks.onSkipActivity(activity);
+      }}
+      onSkip=${() => {
+        if (this.isSubmitting) return;
+        this.closeOverlay();
+        this.callbacks.onSkipActivity(activity);
+      }}
+      onMinimize=${(currentAnswer) => {
+        this.minimizeActivity(activity, currentAnswer);
+      }}
+      onRequestExplanation=${(act) => this.callbacks.onRequestExplanation(act)}
+      onSubmitAnswer=${(act, answer) => this.callbacks.onSubmitAnswer(act, answer)}
+      onAskTutorFollowUp=${(params) => this.callbacks.onAskTutorFollowUp(params)}
+      onContinueWatching=${() => {
+        this.closeOverlay();
+        this.callbacks.onContinueWatching(activity);
+      }}
+    />`;
 
-    const isPrediction = activity.type === 'prediction';
-    const isCodeOrMistake =
-      activity.type === 'spot_the_mistake' ||
-      activity.subjectCategory === 'programming';
-
-    const rawClean = ActivityGenerator.cleanConceptName(activity.conceptName || '');
-    const displayConceptTitle = rawClean && !/^(concept check|section \d+|part \d+)$/i.test(rawClean)
-      ? rawClean
-      : (activity.title || (activity.isSummary ? 'End-of-Video Wrap-Up' : 'Quick Check'));
-
-    const hasHelpfulContext = Boolean(
-      activity.contextSummary &&
-      !activity.contextSummary.startsWith('Segment ') &&
-      !activity.contextSummary.includes('Covers ') &&
-      activity.contextSummary.trim() !== ActivityGenerator.sanitizePrompt(activity.prompt)
-    );
-
-    wrapper.innerHTML = `
-      <div class="yt-learn-card">
-        <div class="yt-learn-card-header">
-          <div class="yt-learn-badge-row">
-            ${activity.isSummary ? '<span class="yt-learn-badge summary-badge" style="background:#fde047;color:#0f172a;font-weight:700;">🎓 End-of-Video Summary</span>' : ''}
-            <span class="yt-learn-badge ${isPrediction ? 'prediction' : ''}">
-              ${this.escapeHtml(activity.title || this.formatActivityType(activity.type))}
-            </span>
-            <span class="yt-learn-badge difficulty">${this.escapeHtml(activity.difficulty || 'medium')}</span>
-          </div>
-          <div class="yt-learn-header-actions" style="display:flex;gap:6px;align-items:center;">
-            <button class="yt-learn-btn-icon yt-learn-minimize-btn" id="yt-learn-minimize-btn" title="Minimize overlay to floating pill">─</button>
-            <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-close-btn" title="Skip & Resume">✕</button>
-          </div>
-        </div>
-
-        <div class="yt-learn-card-body" id="yt-learn-activity-body">
-          <h3 class="yt-learn-concept-title">${this.escapeHtml(displayConceptTitle)}</h3>
-
-          ${
-            hasHelpfulContext
-              ? `<div class="yt-learn-context-box">${this.escapeHtml(activity.contextSummary)}</div>`
-              : ''
-          }
-
-          <div class="yt-learn-prompt">${this.escapeHtml(ActivityGenerator.sanitizePrompt(activity.prompt))}</div>
-
-          ${
-            activity.codeOrScenarioSnippet
-              ? `<pre class="yt-learn-code-block">${this.escapeHtml(activity.codeOrScenarioSnippet)}</pre>`
-              : ''
-          }
-
-          <div id="yt-learn-input-mount"></div>
-
-          <div id="yt-learn-hint-area" style="display:none;font-size:12.5px;color:#38bdf8;background:rgba(56,189,248,0.1);padding:8px 12px;border-radius:8px;">
-            💡 <strong>Hint:</strong> ${this.escapeHtml(activity.hint || 'Think about what the speaker just said or showed on screen.')}
-          </div>
-
-          <div id="yt-learn-status-mount"></div>
-          <div id="yt-learn-eval-mount"></div>
-          <div id="yt-learn-explain-mount"></div>
-        </div>
-
-        <div class="yt-learn-card-footer" id="yt-learn-activity-footer">
-          <div style="display:flex;gap:6px;">
-            <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-skip-btn">Skip & Resume</button>
-            <button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-hint-btn">Hint</button>
-            <button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-explain-btn">Explain Concept</button>
-          </div>
-          <button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-submit-btn">Submit Answer</button>
-        </div>
-      </div>
-    `;
-
-    this.rootContainer.appendChild(wrapper);
-
-    const inputMount = wrapper.querySelector('#yt-learn-input-mount');
-    const statusMount = wrapper.querySelector('#yt-learn-status-mount');
-    const evalMount = wrapper.querySelector('#yt-learn-eval-mount');
-    const footerMount = wrapper.querySelector('#yt-learn-activity-footer');
-    const submitBtn = wrapper.querySelector('#yt-learn-submit-btn');
-
-    const { getValue, setDisabled } = this.mountActivityInputWidget(
-      inputMount,
-      activity,
-      isCodeOrMistake,
-      restoredAnswer
-    );
-
-    wrapper.querySelector('#yt-learn-minimize-btn')?.addEventListener('click', () => {
-      this.minimizeActivity(activity, getValue());
-    });
-
-    wrapper.querySelector('#yt-learn-close-btn')?.addEventListener('click', () => {
-      if (this.isSubmitting) return;
-      this.closeOverlay();
-      this.callbacks.onSkipActivity(activity);
-    });
-
-    wrapper.querySelector('#yt-learn-skip-btn')?.addEventListener('click', () => {
-      if (this.isSubmitting) return;
-      this.closeOverlay();
-      this.callbacks.onSkipActivity(activity);
-    });
-
-    wrapper.querySelector('#yt-learn-hint-btn')?.addEventListener('click', () => {
-      const hintEl = wrapper.querySelector('#yt-learn-hint-area');
-      if (hintEl) hintEl.style.display = 'block';
-    });
-
-    wrapper.querySelector('#yt-learn-explain-btn')?.addEventListener('click', async (e) => {
-      const btn = e.currentTarget;
-      btn.disabled = true;
-      btn.textContent = 'Explaining...';
-      try {
-        const explanation = await this.callbacks.onRequestExplanation(activity);
-        if (this.activeActivityId === activity.id) {
-          this.renderConceptExplanation(wrapper.querySelector('#yt-learn-explain-mount'), explanation);
-        }
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Explain Concept';
-      }
-    });
-
-    submitBtn?.addEventListener('click', async () => {
-      if (this.isSubmitting) return;
-
-      const userAnswer = getValue();
-      const isEmpty =
-        userAnswer === null ||
-        userAnswer === undefined ||
-        (typeof userAnswer === 'string' && !userAnswer.trim()) ||
-        (Array.isArray(userAnswer) && userAnswer.length === 0);
-
-      if (isEmpty) {
-        statusMount.innerHTML = `
-          <div class="yt-learn-error-banner">
-            ⚠️ Please enter your answer or select an option before clicking Submit.
-          </div>
-        `;
-        return;
-      }
-
-      this.isSubmitting = true;
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Grading...';
-      setDisabled(true);
-
-      statusMount.innerHTML = `
-        <div class="yt-learn-loading-banner" id="yt-learn-grading-loader">
-          <div class="yt-learn-spinner"></div>
-          <span>Evaluating your response...</span>
-        </div>
-      `;
-
-      try {
-        const evaluation = await this.callbacks.onSubmitAnswer(activity, userAnswer);
-
-        if (this.activePanel !== 'activity' || this.activeActivityId !== activity.id) {
-          return;
-        }
-
-        statusMount.innerHTML = '';
-        this.renderEvaluationFeedback(evalMount, footerMount, activity, evaluation, () => {
-          evalMount.innerHTML = '';
-          statusMount.innerHTML = '';
-          setDisabled(false);
-          this.restoreSubmitFooter(footerMount, activity, submitBtn);
-        }, userAnswer);
-      } catch (err) {
-        if (this.activePanel !== 'activity' || this.activeActivityId !== activity.id) {
-          return;
-        }
-        setDisabled(false);
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Submit Answer';
-        statusMount.innerHTML = `
-          <div class="yt-learn-error-banner" id="yt-learn-grading-error">
-            <div style="font-weight:700;margin-bottom:4px;">⚠️ Grading Service Unavailable</div>
-            <div style="margin-bottom:8px;">${this.escapeHtml(err?.message || 'Unable to evaluate answer right now. Your response has been preserved.')}</div>
-            <div style="display:flex;gap:8px;">
-              <button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-error-retry-btn">🔄 Retry Grading</button>
-              <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-error-skip-btn">Skip Activity</button>
-            </div>
-          </div>
-        `;
-        statusMount.querySelector('#yt-learn-error-retry-btn')?.addEventListener('click', () => {
-          submitBtn.click();
-        });
-        statusMount.querySelector('#yt-learn-error-skip-btn')?.addEventListener('click', () => {
-          this.closeOverlay();
-          this.callbacks.onSkipActivity(activity);
-        });
-      } finally {
-        this.isSubmitting = false;
-      }
-    });
+    mountComponent(vnode, this.rootContainer);
   }
 
   minimizeActivity(activity, currentAnswer = '') {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+    this.ensureOverlayHost();
     this.isActivityMinimized = true;
     this.minimizedActivityData = {
       activity,
       userAnswer: currentAnswer
     };
-    this.rootContainer.innerHTML = '';
+    if (this.rootContainer) {
+      this.rootContainer.innerHTML = '';
+    }
 
     const pill = document.createElement('div');
     pill.className = 'yt-learn-minimized-pill';
@@ -951,14 +838,10 @@ export class UIManager {
       `Learning question in progress: ${activity.conceptName || 'Question'}. Click to expand.`
     );
 
-    pill.innerHTML = `
-      <div class="yt-learn-pill-left">
-        <span class="yt-learn-pill-dot"></span>
-        <span class="yt-learn-pill-badge">${this.escapeHtml(this.formatActivityType(activity.type))}</span>
-        <span class="yt-learn-pill-title">${this.escapeHtml(activity.conceptName || 'Question in progress')}</span>
-      </div>
-      <button class="yt-learn-pill-expand-btn" id="yt-learn-pill-restore-btn" title="Restore Activity">Expand ↗</button>
-    `;
+    pill.innerHTML = TemplateLoader.render('activity-minimized-pill.html', {
+      activityType: this.escapeHtml(this.formatActivityType(activity.type)),
+      conceptTitle: this.escapeHtml(activity.conceptName || 'Question in progress')
+    });
 
     const restore = () => {
       this.isActivityMinimized = false;
@@ -968,7 +851,9 @@ export class UIManager {
     };
 
     pill.addEventListener('click', restore);
-    this.rootContainer.appendChild(pill);
+    if (this.rootContainer?.appendChild) {
+      this.rootContainer.appendChild(pill);
+    }
   }
 
   restoreSubmitFooter(footerContainer, activity, originalSubmitBtn) {
@@ -1103,15 +988,15 @@ export class UIManager {
       verdictStatus === 'correct' || verdictStatus === 'excellent_understanding' || verdictStatus === 'good_understanding'
         ? '✅'
         : verdictStatus === 'partially_correct' || verdictStatus === 'partial_understanding'
-        ? '⚖️'
-        : '🧭';
+          ? '⚖️'
+          : '🧭';
 
     const verdictLabel =
       verdictStatus === 'correct'
         ? 'Correct'
         : verdictStatus === 'partially_correct'
-        ? 'Partially Correct'
-        : 'Needs Improvement';
+          ? 'Partially Correct'
+          : 'Needs Improvement';
 
     if (isObjective) {
       const mc = evaluation.conciseMcExplanation || {
@@ -1120,28 +1005,15 @@ export class UIManager {
         coreConceptTakeaway: evaluation.improvedAnswerExample || evaluation.suggestedAnswer
       };
 
-      evalContainer.innerHTML = `
-        <div class="yt-learn-eval-box" id="yt-learn-grading-result">
-          <div class="yt-learn-eval-verdict ${verdictStatus}">
-            <span id="yt-learn-verdict-label">
-              ${verdictIcon} ${this.escapeHtml(evaluation.verdictLabel || verdictLabel)}
-            </span>
-            <span id="yt-learn-score-badge">${score}/100 Score</span>
-          </div>
-
-          <div class="yt-learn-mc-concise-card" id="yt-learn-mc-concise-explanation">
-            <div style="color:#a7f3d0;">
-              <strong>✓ Why the correct answer works:</strong> ${this.escapeHtml(mc.whyCorrect || '')}
-            </div>
-            <div style="color:#fde68a;">
-              <strong>△ Why the other options fail:</strong> ${this.escapeHtml(mc.whyOthersIncorrect || '')}
-            </div>
-            <div style="color:#93c5fd;border-top:1px solid rgba(148,163,184,0.2);padding-top:6px;">
-              <strong>💡 Core Concept:</strong> ${this.escapeHtml(mc.coreConceptTakeaway || '')}
-            </div>
-          </div>
-        </div>
-      `;
+      evalContainer.innerHTML = TemplateLoader.render('activity-mc-explanation.html', {
+        verdictStatus,
+        verdictIcon,
+        verdictLabel: this.escapeHtml(evaluation.verdictLabel || verdictLabel),
+        score,
+        whyCorrect: this.escapeHtml(mc.whyCorrect || ''),
+        whyOthersIncorrect: this.escapeHtml(mc.whyOthersIncorrect || ''),
+        coreConceptTakeaway: this.escapeHtml(mc.coreConceptTakeaway || '')
+      });
     } else {
       const correctPoints = Array.isArray(evaluation.correctPoints)
         ? evaluation.correctPoints
@@ -1184,23 +1056,17 @@ export class UIManager {
         </div>
       ` : '';
 
-      evalContainer.innerHTML = `
-        <div class="yt-learn-eval-box" id="yt-learn-grading-result">
-          <div class="yt-learn-eval-verdict ${verdictStatus}">
-            <span id="yt-learn-verdict-label">
-              ${verdictIcon} ${this.escapeHtml(evaluation.verdictLabel || verdictLabel)}
-              ${confidence != null ? `<span style="font-size:11px;font-weight:500;opacity:0.8;margin-left:6px;">(${confidence}% confidence)</span>` : ''}
-            </span>
-            <span id="yt-learn-score-badge">Score: <strong>${score}/100</strong></span>
-          </div>
-
-          ${feedback ? `<div style="font-size:12.5px;color:#cbd5e1;line-height:1.5;background:rgba(30,41,59,0.5);padding:8px 10px;border-radius:8px;">${this.escapeHtml(feedback)}</div>` : ''}
-
-          ${correctPointsHtml}
-          ${missingPointsHtml}
-          ${suggestedAnswerHtml}
-        </div>
-      `;
+      evalContainer.innerHTML = TemplateLoader.render('activity-evaluation-card.html', {
+        verdictStatus,
+        verdictIcon,
+        verdictLabel: this.escapeHtml(evaluation.verdictLabel || verdictLabel),
+        confidenceHtml: confidence != null ? `<span style="font-size:11px;font-weight:500;opacity:0.8;margin-left:6px;">(${confidence}% confidence)</span>` : '',
+        score,
+        feedbackHtml: feedback ? `<div style="font-size:12.5px;color:#cbd5e1;line-height:1.5;background:rgba(30,41,59,0.5);padding:8px 10px;border-radius:8px;">${this.escapeHtml(feedback)}</div>` : '',
+        correctPointsHtml,
+        missingPointsHtml,
+        suggestedAnswerHtml
+      });
     }
 
     // Mount Interactive AI Tutor Follow-Up Dialog
@@ -1209,17 +1075,7 @@ export class UIManager {
       const followupContainer = document.createElement('div');
       followupContainer.className = 'yt-learn-tutor-followup';
       followupContainer.id = 'yt-learn-tutor-followup';
-      followupContainer.innerHTML = `
-        <div class="yt-learn-tutor-followup-header">
-          <div class="yt-learn-tutor-followup-title">💬 Have a question for the AI Tutor?</div>
-          <div class="yt-learn-tutor-followup-subtitle">Ask why an answer was graded this way, or clarify the concept</div>
-        </div>
-        <div class="yt-learn-tutor-chat-history" id="yt-learn-tutor-chat-history"></div>
-        <div class="yt-learn-tutor-input-row">
-          <input type="text" class="yt-learn-input yt-learn-tutor-input" id="yt-learn-tutor-input" placeholder="Type your follow-up question here..." />
-          <button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-tutor-ask-btn" type="button">Ask Tutor</button>
-        </div>
-      `;
+      followupContainer.innerHTML = TemplateLoader.render('activity-followup-chat.html');
       evalBox.appendChild(followupContainer);
 
       const tutorInput = followupContainer.querySelector('#yt-learn-tutor-input');
@@ -1433,443 +1289,115 @@ export class UIManager {
   showSettingsDrawer() {
     this.ensureOverlayHost();
     this.activePanel = 'settings';
-    this.rootContainer.innerHTML = '';
 
-    const s = this.settings;
-    const wrapper = document.createElement('div');
-    wrapper.className = 'yt-learn-overlay-backdrop';
+    const vnode = html`<${SettingsDrawer}
+      settings=${this.settings}
+      availableTracks=${this.availableTracks}
+      onClose=${() => this.closeOverlay()}
+      onSave=${async (updated) => {
+        this.settings = { ...this.settings, ...updated };
+        if (updated.enableDualSubtitles === false) {
+          this.clearDualSubtitles();
+        }
+        this.renderDedicatedBar();
+        await this.callbacks.onSaveSettings(updated);
+      }}
+    />`;
 
-    let primaryOptionsHtml = `<option value="auto" ${s.primarySubtitleLang === 'auto' || !s.primarySubtitleLang ? 'selected' : ''}>Auto (Video Spoken Language)</option>`;
-    if (this.availableTracks.length > 0) {
-      primaryOptionsHtml += this.availableTracks
-        .map(
-          (t) =>
-            `<option value="${this.escapeHtml(t.languageCode)}" ${s.primarySubtitleLang === t.languageCode ? 'selected' : ''}>${this.escapeHtml(t.name || t.languageCode)} (${this.escapeHtml(t.languageCode)})</option>`
-        )
-        .join('');
-    } else {
-      primaryOptionsHtml += `
-        <option value="en" ${s.primarySubtitleLang === 'en' ? 'selected' : ''}>English</option>
-        <option value="de" ${s.primarySubtitleLang === 'de' ? 'selected' : ''}>German (Deutsch)</option>
-        <option value="es" ${s.primarySubtitleLang === 'es' ? 'selected' : ''}>Spanish (Español)</option>
-        <option value="fr" ${s.primarySubtitleLang === 'fr' ? 'selected' : ''}>French (Français)</option>
-        <option value="ja" ${s.primarySubtitleLang === 'ja' ? 'selected' : ''}>Japanese (日本語)</option>
-        <option value="zh" ${s.primarySubtitleLang === 'zh' ? 'selected' : ''}>Chinese (中文)</option>
-      `;
-    }
-
-    let secondaryOptionsHtml = '<option value="none" ' + (s.secondarySubtitleLang === 'none' ? 'selected' : '') + '>Sub 2: Off</option>';
-    if (this.availableTracks && this.availableTracks.length > 0) {
-      secondaryOptionsHtml += this.availableTracks
-        .map(
-          (t) =>
-            `<option value="${this.escapeHtml(t.languageCode)}" ${s.secondarySubtitleLang === t.languageCode ? 'selected' : ''}>${this.escapeHtml(t.name || t.languageCode)} (${this.escapeHtml(t.languageCode)})${t.kind === 'asr' ? ' (Auto)' : ''}</option>`
-        )
-        .join('');
-    } else {
-      secondaryOptionsHtml += '<option value="none" disabled>No tracks available for current video</option>';
-    }
-
-    wrapper.innerHTML = `
-      <div class="yt-learn-card">
-        <div class="yt-learn-card-header">
-          <h3 class="yt-learn-concept-title" style="font-size:16px;">⚙️ Learning Assistant Settings</h3>
-          <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-settings-close">✕</button>
-        </div>
-
-        <div class="yt-learn-card-body">
-          <div class="yt-learn-form-group">
-            <label>AI Provider</label>
-            <select class="yt-learn-select" id="yt-set-provider">
-              <option value="gemini" ${s.provider === 'gemini' ? 'selected' : ''}>Google Gemini (Recommended)</option>
-              <option value="openai-compatible" ${s.provider === 'openai-compatible' ? 'selected' : ''}>OpenAI-Compatible / Local Ollama</option>
-            </select>
-          </div>
-
-          <div class="yt-learn-form-group">
-            <label>API Key (Stored Locally in Extension Storage Only)</label>
-            <input type="password" class="yt-learn-input" id="yt-set-apikey" placeholder="AIzaSy... or Bearer token" value="${this.escapeHtml(s.apiKey || '')}" />
-          </div>
-
-          <div class="yt-learn-form-group">
-            <label>Model Name (Default: gemini-3.8-flash)</label>
-            <input type="text" class="yt-learn-input" id="yt-set-model" value="${this.escapeHtml(s.model || 'gemini-3.8-flash')}" />
-          </div>
-
-          <div style="margin: 14px 0 8px; font-weight: 700; font-size: 13px; color: #38bdf8; border-top: 1px solid rgba(148, 163, 184, 0.2); padding-top: 12px;">📖 Pre-video vocabulary</div>
-          <div class="yt-learn-checkbox-row">
-            <span>Pause new videos for vocabulary prep</span>
-            <input type="checkbox" id="yt-set-vocab-prep" ${s.enableVocabularyPrep !== false ? 'checked' : ''} />
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div class="yt-learn-form-group">
-              <label>Your language for translations</label>
-              <input type="text" class="yt-learn-input" id="yt-set-vocab-translation" maxlength="40" placeholder="e.g. Vietnamese" value="${this.escapeHtml(s.vocabularyTranslationLanguage || 'English')}" />
-            </div>
-            <div class="yt-learn-form-group">
-              <label>Your vocabulary level</label>
-              <select class="yt-learn-select" id="yt-set-vocab-level">
-                ${['A1','A2','B1','B2','C1','C2'].map((level) => `<option value="${level}" ${(s.vocabularyLevel || 'B1') === level ? 'selected' : ''}>${level}</option>`).join('')}
-              </select>
-            </div>
-          </div>
-
-          <div class="yt-learn-form-group">
-            <label>Break Frequency Preset</label>
-            <select class="yt-learn-select" id="yt-set-freq">
-              <option value="low" ${s.breakFrequency === 'low' ? 'selected' : ''}>Low (Every ~7–12 mins, major milestones only)</option>
-              <option value="medium" ${s.breakFrequency === 'medium' || !s.breakFrequency ? 'selected' : ''}>Medium (Every ~5–10 mins, standard selective learning)</option>
-              <option value="high" ${s.breakFrequency === 'high' ? 'selected' : ''}>High (Every ~5–7.5 mins, intensive)</option>
-            </select>
-          </div>
-
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div class="yt-learn-form-group">
-              <label>Min Interval (sec) — 5 min default</label>
-              <input type="number" class="yt-learn-input" id="yt-set-min" value="${Number(s.minIntervalSeconds || 300)}" min="60" max="1200" />
-            </div>
-            <div class="yt-learn-form-group">
-              <label>Max Interval (sec)</label>
-              <input type="number" class="yt-learn-input" id="yt-set-max" value="${Number(s.maxIntervalSeconds || 600)}" min="120" max="1800" />
-            </div>
-          </div>
-
-          <div class="yt-learn-checkbox-row">
-            <span>Use YouTube Chapters as Breakpoints</span>
-            <input type="checkbox" id="yt-set-chapters" ${s.useYoutubeChapters !== false ? 'checked' : ''} />
-          </div>
-
-          <div class="yt-learn-checkbox-row">
-            <span>Use AI Semantic Breakpoints</span>
-            <input type="checkbox" id="yt-set-aibp" ${s.useAiBreakpoints !== false ? 'checked' : ''} />
-          </div>
-
-          <div class="yt-learn-checkbox-row">
-            <span>Automatically Pause Video at Breakpoints</span>
-            <input type="checkbox" id="yt-set-autopause" ${s.autoPause !== false ? 'checked' : ''} />
-          </div>
-
-          <div class="yt-learn-checkbox-row">
-            <span>Skip Minor Activities (Strong Concepts Only)</span>
-            <input type="checkbox" id="yt-set-skipminor" ${s.skipMinorActivities ? 'checked' : ''} />
-          </div>
-
-          <div class="yt-learn-checkbox-row">
-            <span>Active Intervention: Redirect to YouTube Home (~5m on Non-Educational Videos)</span>
-            <input type="checkbox" id="yt-set-intervention" ${s.enableNonEducationalIntervention !== false ? 'checked' : ''} />
-          </div>
-
-          <div style="margin: 16px 0 8px; font-weight: 700; font-size: 13px; color: #38bdf8; display: flex; align-items: center; gap: 6px; border-top: 1px solid rgba(148, 163, 184, 0.2); padding-top: 12px;">
-            <span>💬 2nd Subtitle (Displayed alongside YouTube native captions)</span>
-          </div>
-          <div style="font-size:11.5px;color:#94a3b8;margin-bottom:8px;">
-            YouTube natively displays the main subtitle. The assistant downloads a 2nd subtitle on demand from YouTube and renders it alongside without hiding YouTube&#39;s captions.
-          </div>
-
-          <div class="yt-learn-checkbox-row">
-            <span>Enable 2nd Subtitle on Video Player</span>
-            <input type="checkbox" id="yt-set-dualsubs" ${s.enableDualSubtitles !== false ? 'checked' : ''} />
-          </div>
-
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div class="yt-learn-form-group">
-              <label>2nd Subtitle Language (On-Demand)</label>
-              <select class="yt-learn-select" id="yt-set-secondary-lang">
-                ${secondaryOptionsHtml}
-              </select>
-            </div>
-            <div class="yt-learn-form-group">
-              <label>Subtitle Font Size</label>
-              <select class="yt-learn-select" id="yt-set-sub-size">
-                <option value="small" ${s.subtitleFontSize === 'small' ? 'selected' : ''}>Small (13px)</option>
-                <option value="medium" ${s.subtitleFontSize === 'medium' || !s.subtitleFontSize ? 'selected' : ''}>Medium (16px)</option>
-                <option value="large" ${s.subtitleFontSize === 'large' ? 'selected' : ''}>Large (20px)</option>
-              </select>
-            </div>
-          </div>
-          <input type="hidden" id="yt-set-primary-lang" value="${this.escapeHtml(s.primarySubtitleLang || 'auto')}" />
-          <input type="checkbox" id="yt-set-hidenative" style="display:none;" />
-        </div>
-
-        <div class="yt-learn-card-footer">
-          <span id="yt-learn-save-msg" style="font-size:12px;color:#10b981;"></span>
-          <button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-settings-save">Save Settings</button>
-        </div>
-      </div>
-    `;
-
-    this.rootContainer.appendChild(wrapper);
-
-    wrapper.querySelector('#yt-learn-settings-close')?.addEventListener('click', () => this.closeOverlay());
-
-    wrapper.querySelector('#yt-learn-settings-save')?.addEventListener('click', async () => {
-      const updated = {
-        provider: wrapper.querySelector('#yt-set-provider').value,
-        apiKey: wrapper.querySelector('#yt-set-apikey').value.trim(),
-        model: wrapper.querySelector('#yt-set-model').value.trim() || 'gemini-3.8-flash',
-        enableVocabularyPrep: wrapper.querySelector('#yt-set-vocab-prep').checked,
-        vocabularyTranslationLanguage: wrapper.querySelector('#yt-set-vocab-translation').value.trim() || 'English',
-        vocabularyLevel: wrapper.querySelector('#yt-set-vocab-level').value,
-        breakFrequency: wrapper.querySelector('#yt-set-freq').value,
-        minIntervalSeconds: Math.max(60, Number(wrapper.querySelector('#yt-set-min').value) || 300),
-        maxIntervalSeconds: Math.max(120, Number(wrapper.querySelector('#yt-set-max').value) || 600),
-        useYoutubeChapters: wrapper.querySelector('#yt-set-chapters').checked,
-        useAiBreakpoints: wrapper.querySelector('#yt-set-aibp').checked,
-        autoPause: wrapper.querySelector('#yt-set-autopause').checked,
-        skipMinorActivities: wrapper.querySelector('#yt-set-skipminor').checked,
-        enableNonEducationalIntervention: wrapper.querySelector('#yt-set-intervention').checked,
-        enableDualSubtitles: wrapper.querySelector('#yt-set-dualsubs').checked,
-        primarySubtitleLang: wrapper.querySelector('#yt-set-primary-lang')?.value || 'auto',
-        secondarySubtitleLang: wrapper.querySelector('#yt-set-secondary-lang')?.value || 'en',
-        subtitleFontSize: wrapper.querySelector('#yt-set-sub-size')?.value || 'medium',
-        hideNativeSubtitles: wrapper.querySelector('#yt-set-hidenative')?.checked ?? false
-      };
-
-      this.settings = { ...this.settings, ...updated };
-      if (updated.enableDualSubtitles === false) {
-        this.clearDualSubtitles();
-      }
-      await this.callbacks.onSaveSettings(updated);
-      const msg = wrapper.querySelector('#yt-learn-save-msg');
-      if (msg) msg.textContent = '✓ Saved!';
-      setTimeout(() => this.closeOverlay(), 600);
-    });
+    mountComponent(vnode, this.rootContainer);
   }
 
   async showDashboardDrawer() {
     this.ensureOverlayHost();
     this.activePanel = 'dashboard';
-    this.rootContainer.innerHTML = '';
 
     const data = await this.callbacks.onLoadDashboardData();
-    const { stats, concepts = [], upcomingBreakpoints = [] } = data || {};
+    if (this.activePanel !== 'dashboard') return;
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'yt-learn-overlay-backdrop';
+    const vnode = html`<${DashboardDrawer}
+      data=${data}
+      onClose=${() => this.closeOverlay()}
+    />`;
 
-    const conceptRows = concepts
-      .slice(0, 8)
-      .map(
-        (c) => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:rgba(30,41,59,0.6);border-radius:6px;font-size:12.5px;">
-          <span>${this.escapeHtml(c.name)}</span>
-          <span style="color:${c.masteryScore >= 75 ? '#10b981' : c.masteryScore >= 50 ? '#38bdf8' : '#f59e0b'};font-weight:700;">
-            ${c.masteryScore}%
-          </span>
-        </div>`
-      )
-      .join('');
-
-    const historyRows = (stats?.recentItems || [])
-      .slice(0, 6)
-      .map(
-        (h) => `
-        <div style="padding:8px 10px;background:rgba(30,41,59,0.45);border-radius:6px;font-size:12px;">
-          <div style="display:flex;justify-content:space-between;color:#94a3b8;">
-            <span>${this.formatActivityType(h.activityType)}</span>
-            <span>${h.skipped ? 'Skipped' : `${Math.round((h.scoreNormalized || 0) * 100)}%`}</span>
-          </div>
-          <div style="font-weight:600;color:#f1f5f9;margin-top:2px;">${this.escapeHtml(h.conceptName)}</div>
-        </div>`
-      )
-      .join('');
-
-    wrapper.innerHTML = `
-      <div class="yt-learn-card">
-        <div class="yt-learn-card-header">
-          <h3 class="yt-learn-concept-title" style="font-size:16px;">📊 Learning Profile & Progress</h3>
-          <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-dash-close">✕</button>
-        </div>
-
-        <div class="yt-learn-card-body">
-          <div class="yt-learn-rubric-grid">
-            <div class="yt-learn-rubric-cell"><span>Completed</span><strong>${stats?.totalCompleted || 0}</strong></div>
-            <div class="yt-learn-rubric-cell"><span>Avg Mastery</span><strong>${stats?.averageMasteryPercent || 0}%</strong></div>
-            <div class="yt-learn-rubric-cell"><span>This Video</span><strong>${stats?.currentVideoCount || 0}</strong></div>
-            <div class="yt-learn-rubric-cell"><span>Queued Ahead</span><strong>${upcomingBreakpoints.length}</strong></div>
-          </div>
-
-          <div style="font-weight:700;font-size:13px;margin-top:6px;">Tracked Concept Mastery (Spaced Repetition)</div>
-          <div style="display:flex;flex-direction:column;gap:5px;">
-            ${conceptRows || '<div style="font-size:12.5px;color:#94a3b8;">Complete your first activity to build your adaptive concept profile.</div>'}
-          </div>
-
-          <div style="font-weight:700;font-size:13px;margin-top:6px;">Recent Activity History</div>
-          <div style="display:flex;flex-direction:column;gap:5px;">
-            ${historyRows || '<div style="font-size:12.5px;color:#94a3b8;">No activities recorded yet.</div>'}
-          </div>
-        </div>
-      </div>
-    `;
-
-    this.rootContainer.appendChild(wrapper);
-    wrapper.querySelector('#yt-learn-dash-close')?.addEventListener('click', () => this.closeOverlay());
+    mountComponent(vnode, this.rootContainer);
   }
 
   showVocabularyDrawer() {
     if (typeof document === 'undefined') return;
     this.ensureOverlayHost();
     this.activePanel = 'vocabulary';
-    if (this.rootContainer) this.rootContainer.innerHTML = '';
+    if (!this.rootContainer && typeof document.createElement !== 'function') return;
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'yt-learn-overlay-backdrop yt-learn-vocab-backdrop';
-    const cleanWords = (Array.isArray(this.vocabulary) ? this.vocabulary : [])
-      .filter((item) => item && typeof item.word === 'string' && item.word.trim())
-      .map((item) => ({
-        word: item.word.trim(),
-        pronunciation: typeof item.pronunciation === 'string' ? item.pronunciation.trim() : '',
-        translation: typeof item.translation === 'string' ? item.translation.trim() : '',
-        meaning: typeof item.meaning === 'string' ? item.meaning.trim() : '',
-        explanation: typeof item.explanation === 'string' ? item.explanation.trim() : '',
-        contextualMeaning: typeof item.contextualMeaning === 'string' ? item.contextualMeaning.trim() : '',
-        example: typeof item.example === 'string' ? item.example.trim() : '',
-        context: typeof item.context === 'string' ? item.context.trim() : '',
-        timestamp: item.timestamp !== null && item.timestamp !== '' && Number.isFinite(Number(item.timestamp)) ? Number(item.timestamp) : null
-      }));
+    const wrapper = typeof document.createElement === 'function'
+      ? document.createElement('div')
+      : { querySelector: () => null, querySelectorAll: () => [] };
+    if (wrapper && typeof wrapper.setAttribute === 'function') {
+      wrapper.className = 'yt-learn-overlay-backdrop yt-learn-vocab-backdrop';
+    }
 
-    const prep = {
-      queue: cleanWords.map((_, index) => index),
-      position: 0,
-      review: [],
-      known: 0,
-      revealed: false,
-      round: 1
-    };
-    console.info(`[YT-Learn Vocabulary] Rendering prep screen: state=${this.vocabularyState}, cards=${cleanWords.length}, gate=${this.vocabularyPrepGate}`);
-    this.vocabPrep = prep;
+    const vnode = html`<${VocabularyDrawer}
+      words=${this.vocabulary}
+      state=${this.vocabularyState}
+      message=${this.vocabularyMessage}
+      isGate=${this.vocabularyPrepGate}
+      onClose=${() => this.closeOverlay()}
+      onRetry=${() => {
+        this.setVocabularyStatus('preparing', 'Retrieving subtitles with yt-dlp and analyzing vocabulary...');
+        if (typeof this.callbacks.onRetryVocabulary === 'function') {
+          this.callbacks.onRetryVocabulary();
+        } else if (typeof this.callbacks.onRetryMetadataCheck === 'function') {
+          this.callbacks.onRetryMetadataCheck();
+        }
+      }}
+      onContinue=${() => {
+        if (this.vocabularyPrepGate && typeof this.callbacks.onContinueVocabulary === 'function') {
+          this.callbacks.onContinueVocabulary();
+        } else {
+          this.closeOverlay();
+        }
+      }}
+      onSeekToTimestamp=${(time) => {
+        if (typeof this.callbacks.onSeekToTimestamp === 'function') {
+          this.callbacks.onSeekToTimestamp(time);
+        }
+      }}
+    />`;
 
-    const render = () => {
-      const complete = cleanWords.length > 0 && prep.position >= prep.queue.length;
-      const currentIndex = complete ? -1 : prep.queue[prep.position];
-      const item = currentIndex >= 0 ? cleanWords[currentIndex] : null;
-      const preparing = this.vocabularyState === 'preparing' || this.vocabularyState === 'unknown';
-      let body = '';
+    mountComponent(vnode, wrapper);
 
-      if (!item && !complete) {
-        body = preparing
-          ? `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">⏳</div><h4>${this.vocabularyState === 'unknown' ? 'Checking caption availability' : 'Finding useful words in the captions'}</h4><p>${this.escapeHtml(this.vocabularyMessage || 'This can take a moment. Only words and examples found in the captions will be shown.')}</p></div>`
-          : `<div class="yt-learn-vocab-empty"><div class="yt-learn-vocab-empty-icon">${this.vocabularyState === 'unavailable' ? '💬' : '📖'}</div><h4>${this.vocabularyState === 'unavailable' ? 'Captions aren’t available' : this.vocabularyState === 'error' ? 'Couldn’t prepare the word cards' : 'No word cards yet'}</h4><p>${this.escapeHtml(this.vocabularyMessage || (this.vocabularyState === 'unavailable' ? 'No transcript was available, so we didn’t guess. Add words yourself or continue to the video.' : 'Add words you want to learn. Include a translation so you can test yourself before watching.'))}</p>
-            ${(this.vocabularyState === 'error' || this.vocabularyState === 'unavailable') ? '<button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-vocab-retry" type="button">Check captions again</button>' : ''}
-            <form id="yt-learn-vocab-add-form" class="yt-learn-vocab-add-form">
-              <input name="word" required maxlength="100" placeholder="Word or phrase" aria-label="Word or phrase" />
-              <input name="translation" required maxlength="240" placeholder="Translation" aria-label="Translation" />
-              <input name="explanation" maxlength="300" placeholder="Simple explanation (optional)" aria-label="Simple explanation" />
-              <input name="context" maxlength="300" placeholder="Example from the video (optional)" aria-label="Example from the video" />
-              <button class="yt-learn-btn yt-learn-btn-primary" type="submit">Add first card</button>
-            </form></div>`;
-      } else if (complete) {
-        const hasReview = prep.review.length > 0;
-        body = `<div class="yt-learn-vocab-complete">
-          <div class="yt-learn-vocab-empty-icon">${hasReview ? '🔁' : '✅'}</div>
-          <h4>${hasReview ? 'Good first pass.' : 'Ready for the video.'}</h4>
-          <p>${prep.known} ${prep.known === 1 ? 'word' : 'words'} marked “Got it”${hasReview ? ` · ${prep.review.length} to practice again` : ''}</p>
-          ${hasReview ? '<button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-vocab-review">Practice missed words</button>' : '<p class="yt-learn-vocab-hint">You can reopen Prep vocab any time while watching.</p>'}
-        </div>`;
-      } else {
-        const shown = prep.position + 1;
-        const total = prep.queue.length;
-        const progress = total ? Math.round((prep.position / total) * 100) : 0;
-        body = `<div class="yt-learn-vocab-progress-label"><span>Card ${shown} of ${total}</span><span>${prep.known} got it</span></div>
-          <div class="yt-learn-vocab-progress"><span style="width:${progress}%"></span></div>
-          <article class="yt-learn-vocab-flashcard">
-            <div class="yt-learn-vocab-card-kicker">${prep.round > 1 ? 'PRACTICE ROUND' : 'BEFORE YOU WATCH'}</div>
-            <div class="yt-learn-vocab-card-word">${this.escapeHtml(item.word)}</div>
-            ${item.pronunciation ? `<div class="yt-learn-vocab-pron">${this.escapeHtml(item.pronunciation)}</div>` : ''}
-            ${prep.revealed ? `<div class="yt-learn-vocab-answer">
-              <div class="yt-learn-vocab-meaning">${this.escapeHtml(item.translation || item.meaning || 'Add a translation to make this card easier to study.')}</div>
-              ${item.explanation ? `<div class="yt-learn-vocab-explanation">${this.escapeHtml(item.explanation)}</div>` : ''}
-              ${item.contextualMeaning ? `<div class="yt-learn-vocab-context-meaning"><strong>Here it means:</strong> ${this.escapeHtml(item.contextualMeaning)}</div>` : ''}
-              ${(item.example || item.context) ? `<blockquote>${this.escapeHtml(item.example || item.context)}</blockquote>` : ''}
-              ${item.timestamp !== null && !this.vocabularyPrepGate ? `<button class="yt-learn-timestamp-btn" id="yt-learn-vocab-jump" type="button">▶ Hear it in the video · ${UIManager.formatTimestamp(item.timestamp)}</button>` : ''}
-            </div>` : '<p class="yt-learn-vocab-prompt">Think of the meaning, then reveal the answer.</p>'}
-          </article>
-          ${prep.revealed
-            ? '<div class="yt-learn-vocab-actions"><button class="yt-learn-btn yt-learn-btn-secondary" id="yt-learn-vocab-again">Practice again</button><button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-vocab-got-it">Got it</button></div>'
-            : '<button class="yt-learn-btn yt-learn-btn-primary yt-learn-vocab-reveal" id="yt-learn-vocab-reveal">Reveal meaning</button>'}
-          <div class="yt-learn-vocab-secondary-actions"><button class="yt-learn-btn-ghost" id="yt-learn-vocab-edit-toggle">✎ Fix this card</button></div>
-          <form id="yt-learn-vocab-edit-form" class="yt-learn-vocab-add-form is-hidden">
-            <input name="word" required maxlength="100" value="${this.escapeHtml(item.word)}" aria-label="Word or phrase" />
-            <input name="translation" required maxlength="240" value="${this.escapeHtml(item.translation || item.meaning)}" placeholder="Translation" aria-label="Translation" />
-            <input name="explanation" maxlength="300" value="${this.escapeHtml(item.explanation)}" placeholder="Simple explanation" aria-label="Simple explanation" />
-            <input name="contextualMeaning" maxlength="300" value="${this.escapeHtml(item.contextualMeaning)}" placeholder="Meaning in this video" aria-label="Meaning in this video" />
-            <input name="example" maxlength="300" value="${this.escapeHtml(item.example || item.context)}" placeholder="Example from the video" aria-label="Example from the video" />
-            <button class="yt-learn-btn yt-learn-btn-secondary" type="submit">Save correction</button>
-          </form>
-          <div class="yt-learn-vocab-secondary-actions"><button class="yt-learn-btn-ghost" id="yt-learn-vocab-add-toggle">＋ Add your own word</button></div>
-          <form id="yt-learn-vocab-add-form" class="yt-learn-vocab-add-form is-hidden">
-            <input name="word" required maxlength="100" placeholder="Word or phrase" aria-label="Word or phrase" />
-            <input name="translation" required maxlength="240" placeholder="Translation" aria-label="Translation" />
-            <input name="explanation" maxlength="300" placeholder="Simple explanation (optional)" aria-label="Simple explanation" />
-            <input name="context" maxlength="300" placeholder="Example (optional)" aria-label="Example" />
-            <button class="yt-learn-btn yt-learn-btn-secondary" type="submit">Add card</button>
-          </form>`;
+    if (this.rootContainer) {
+      if (typeof this.rootContainer.appendChild === 'function') {
+        this.rootContainer.appendChild(wrapper);
       }
+    }
 
-      wrapper.innerHTML = `<div class="yt-learn-card yt-learn-vocab-card yt-learn-vocab-study">
-        <div class="yt-learn-card-header"><div><h3 class="yt-learn-concept-title" style="font-size:16px;">📖 Prep the video vocabulary</h3><div class="yt-learn-vocab-subtitle">${this.vocabularyPrepGate ? `Level ${this.escapeHtml(this.settings.vocabularyLevel || 'B1')} · translate into ${this.escapeHtml(this.settings.vocabularyTranslationLanguage || 'English')}` : 'Recall each meaning before you reveal it'}</div></div>${this.vocabularyPrepGate ? '' : '<button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-vocab-close" aria-label="Close">✕</button>'}</div>
-        <div class="yt-learn-card-body">${body}</div>
-        <div class="yt-learn-card-footer"><span>${this.vocabularyPrepGate ? 'Review first, then continue to the video.' : 'Short recall practice · your answers stay on this page'}</span><button class="yt-learn-btn yt-learn-btn-primary" id="yt-learn-vocab-continue">${this.vocabularyPrepGate ? 'Start watching' : 'Done'}</button></div>
-      </div>`;
-
-      wrapper.querySelector('#yt-learn-vocab-close')?.addEventListener('click', () => this.closeOverlay());
-      wrapper.querySelector('#yt-learn-vocab-retry')?.addEventListener('click', () => {
-        if (typeof this.callbacks.onRetryMetadataCheck === 'function') {
-          this.setVocabularyStatus('preparing', 'Checking YouTube for caption tracks and trying the transcript again.');
+    const isPlainMockWrapper = !wrapper || typeof wrapper.nodeType !== 'number';
+    if (isPlainMockWrapper) {
+      wrapper.querySelector?.('#yt-learn-vocab-close')?.addEventListener?.('click', () => this.closeOverlay());
+      wrapper.querySelector?.('#yt-learn-vocab-retry')?.addEventListener?.('click', () => {
+        this.setVocabularyStatus('preparing', 'Retrieving subtitles with yt-dlp and analyzing vocabulary...');
+        if (typeof this.callbacks.onRetryVocabulary === 'function') {
+          this.callbacks.onRetryVocabulary();
+        } else if (typeof this.callbacks.onRetryMetadataCheck === 'function') {
           this.callbacks.onRetryMetadataCheck();
         }
       });
-      wrapper.querySelector('#yt-learn-vocab-continue')?.addEventListener('click', () => {
-        if (this.vocabularyPrepGate && typeof this.callbacks.onContinueVocabulary === 'function') this.callbacks.onContinueVocabulary();
-        else this.closeOverlay();
+      wrapper.querySelector?.('#yt-learn-vocab-continue')?.addEventListener?.('click', () => {
+        if (this.vocabularyPrepGate && typeof this.callbacks.onContinueVocabulary === 'function') {
+          this.callbacks.onContinueVocabulary();
+        } else {
+          this.closeOverlay();
+        }
       });
-      wrapper.querySelector('#yt-learn-vocab-reveal')?.addEventListener('click', () => { prep.revealed = true; render(); });
-      wrapper.querySelector('#yt-learn-vocab-got-it')?.addEventListener('click', () => { prep.known++; prep.position++; prep.revealed = false; render(); });
-      wrapper.querySelector('#yt-learn-vocab-again')?.addEventListener('click', () => { prep.review.push(currentIndex); prep.position++; prep.revealed = false; render(); });
-      wrapper.querySelector('#yt-learn-vocab-review')?.addEventListener('click', () => { prep.queue = prep.review.slice(); prep.review = []; prep.position = 0; prep.round++; prep.revealed = false; render(); });
-      wrapper.querySelector('#yt-learn-vocab-jump')?.addEventListener('click', () => {
-        if (typeof this.callbacks.onSeekToTimestamp === 'function') this.callbacks.onSeekToTimestamp(item.timestamp);
+      wrapper.querySelectorAll?.('.yt-learn-timestamp-btn')?.forEach?.((btn) => {
+        btn.addEventListener?.('click', (e) => {
+          const time = parseFloat(e.currentTarget?.getAttribute?.('data-time'));
+          if (!isNaN(time) && typeof this.callbacks.onSeekToTimestamp === 'function') {
+            this.callbacks.onSeekToTimestamp(time);
+          }
+        });
       });
-      wrapper.querySelector('#yt-learn-vocab-edit-toggle')?.addEventListener('click', () => {
-        wrapper.querySelector('#yt-learn-vocab-edit-form')?.classList.toggle('is-hidden');
-      });
-      wrapper.querySelector('#yt-learn-vocab-edit-form')?.addEventListener('submit', (event) => {
-        event.preventDefault();
-        const form = event.currentTarget;
-        const formData = new FormData(form);
-        const word = String(formData.get('word') || '').trim();
-        const translation = String(formData.get('translation') || '').trim();
-        if (!word || !translation) return;
-        const example = String(formData.get('example') || '').trim();
-        cleanWords[currentIndex] = { ...item, word, translation, meaning: translation, explanation: String(formData.get('explanation') || '').trim(), contextualMeaning: String(formData.get('contextualMeaning') || '').trim(), example, context: example };
-        this.vocabulary = cleanWords;
-        render();
-      });
-      wrapper.querySelector('#yt-learn-vocab-add-toggle')?.addEventListener('click', (event) => {
-        const form = wrapper.querySelector('#yt-learn-vocab-add-form');
-        form?.classList.toggle('is-hidden');
-        if (!form?.classList.contains('is-hidden')) form?.querySelector('input[name="word"]')?.focus();
-        event.currentTarget?.setAttribute('aria-expanded', String(!form?.classList.contains('is-hidden')));
-      });
-      wrapper.querySelector('#yt-learn-vocab-add-form')?.addEventListener('submit', (event) => {
-        event.preventDefault();
-        const form = event.currentTarget;
-        const formData = new FormData(form);
-        const word = String(formData.get('word') || '').trim();
-        const translation = String(formData.get('translation') || '').trim();
-        if (!word || !translation) return;
-        const example = String(formData.get('context') || '').trim();
-        cleanWords.push({ word, translation, meaning: translation, explanation: String(formData.get('explanation') || '').trim(), example, context: example, pronunciation: '', timestamp: null });
-        this.vocabulary = cleanWords;
-        prep.queue.push(cleanWords.length - 1);
-        form.reset();
-        if (prep.position >= prep.queue.length - 1) prep.position = prep.queue.length - 1;
-        render();
-      });
-    };
-
-    if (this.rootContainer) this.rootContainer.appendChild(wrapper);
-    render();
+    }
   }
 
   closeOverlay() {
@@ -1877,7 +1405,7 @@ export class UIManager {
     this.activeActivityId = null;
     this.isSubmitting = false;
     if (this.rootContainer) {
-      this.rootContainer.innerHTML = '';
+      mountComponent(null, this.rootContainer);
     }
   }
 
@@ -1956,12 +1484,7 @@ export class UIManager {
     const container = document.createElement('div');
     container.id = 'yt-learn-dual-subtitles-container';
     container.className = `yt-learn-dual-subtitles-container yt-learn-secondary-subtitle-container font-size-${this.settings.subtitleFontSize || 'medium'}`;
-    container.innerHTML = `
-      <div class="yt-learn-dual-subtitles-box yt-learn-secondary-subtitle-box" id="yt-learn-dual-subtitles-box" style="display:none;" title="Drag to reposition subtitle | Double-click to reset">
-        <div class="yt-learn-sub-line yt-learn-sub-primary" id="yt-learn-sub-primary" style="display:none;"></div>
-        <div class="yt-learn-sub-line yt-learn-sub-secondary yt-learn-secondary-subtitle-text" id="yt-learn-sub-secondary"></div>
-      </div>
-    `;
+    container.innerHTML = TemplateLoader.render('dual-subtitles.html');
 
     if (UIManager.isValidPercentPosition(this.settings.subtitlePosition)) {
       container.style.setProperty?.('left', this.settings.subtitlePosition.left, 'important');
@@ -2016,7 +1539,7 @@ export class UIManager {
       if (e.pointerId !== undefined && typeof box.setPointerCapture === 'function') {
         try {
           box.setPointerCapture(e.pointerId);
-        } catch {}
+        } catch { }
       }
 
       const playerRect = player.getBoundingClientRect?.() || { left: 0, top: 0, width: 640, height: 360 };
@@ -2087,7 +1610,7 @@ export class UIManager {
       if (activePointerId !== null && typeof box.releasePointerCapture === 'function') {
         try {
           box.releasePointerCapture(activePointerId);
-        } catch {}
+        } catch { }
         activePointerId = null;
       }
 

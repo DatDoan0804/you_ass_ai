@@ -1,0 +1,23 @@
+<div class="yt-learn-bar-left">
+  <button class="yt-learn-fab" id="yt-learn-toggle-btn" title="Click to toggle AI Learning Assistant">
+    <span class="yt-learn-status-dot {{statusClass}}"></span>
+    <span>AI Tutor: <strong>{{statusText}}</strong></span>
+  </button>
+  {{classificationBadge}}
+</div>
+<div class="yt-learn-bar-right">
+  <div class="yt-learn-dual-subs-group">
+    <button class="yt-learn-icon-btn {{dualSubsActiveClass}}" id="yt-learn-dual-subs-btn" title="Toggle 2nd Subtitle on/off (displayed alongside YouTube native subtitles){{serverTitle}}">
+      💬 2nd Sub: <strong>{{dualSubsStateText}}</strong>{{serverBadge}}
+    </button>
+    {{sub2Select}}
+    {{sub1Select}}
+  </div>
+  <button class="yt-learn-icon-btn yt-learn-vocab-btn {{vocabActiveClass}}" id="yt-learn-vocab-btn" title="Pre-video vocabulary prep: Click to open/toggle list">
+    📖 Vocab: <strong>{{vocabStateText}}</strong>{{vocabCountBadge}}
+  </button>
+  <button class="yt-learn-icon-btn" id="yt-learn-now-btn" title="Generate activity for current section now">⚡ Quiz Now</button>
+  <button class="yt-learn-icon-btn" id="yt-learn-dashboard-btn" title="Learning Profile & Activity History">📊 Progress</button>
+  <button class="yt-learn-icon-btn" id="yt-learn-settings-btn" title="Assistant Settings & API Key">⚙️ Settings</button>
+  <button class="yt-learn-icon-btn yt-learn-collapse-bar-btn" id="yt-learn-collapse-bar-btn" title="Collapse Bar to Mini Pill">▾</button>
+</div>

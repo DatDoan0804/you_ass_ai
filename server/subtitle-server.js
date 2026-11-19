@@ -512,6 +512,13 @@ export function parseYtDlpSubtitleList(output = '') {
 export function rankSourceSubtitleTracks(tracks = [], preferredLang = 'auto', videoLang = '') {
   tracks = Array.isArray(tracks) ? tracks.filter((track) => track?.languageCode?.toLowerCase() !== 'live_chat') : [];
   if (tracks.length === 0) return [];
+
+  const isOriginal = (track) => {
+    const code = String(track.languageCode || '').toLowerCase();
+    const name = String(track.name || '').toLowerCase();
+    return code.endsWith('-orig') || name.includes('(original)') || name.includes('original');
+  };
+
   const prefix = (lang) => String(lang || '').toLowerCase().split('-')[0];
   const matchLanguage = (target) => {
     if (!target || target === 'auto') return [];
@@ -523,18 +530,27 @@ export function rankSourceSubtitleTracks(tracks = [], preferredLang = 'auto', vi
         return code !== targetLower && (code.startsWith(`${targetPrefix}-`) || code === targetPrefix);
       }));
   };
+
   const preferred = matchLanguage(preferredLang);
   const native = matchLanguage(videoLang);
+  const originalTracks = tracks.filter(isOriginal);
   const manual = tracks.filter((track) => track.kind !== 'asr');
   const automatic = tracks.filter((track) => track.kind === 'asr');
+  const enTracks = matchLanguage('en');
+
   const ordered = [
     ...preferred.filter((track) => track.kind !== 'asr'),
     ...preferred.filter((track) => track.kind === 'asr'),
+    ...originalTracks.filter((track) => track.kind !== 'asr'),
+    ...originalTracks.filter((track) => track.kind === 'asr'),
     ...native.filter((track) => track.kind !== 'asr'),
     ...native.filter((track) => track.kind === 'asr'),
     ...manual,
+    ...enTracks.filter((track) => track.kind !== 'asr'),
+    ...enTracks.filter((track) => track.kind === 'asr'),
     ...automatic
   ];
+
   return ordered.filter((track, index, all) => all.findIndex((item) => item.languageCode === track.languageCode && item.kind === track.kind) === index);
 }
 
@@ -542,25 +558,56 @@ export function selectSourceSubtitleTrack(tracks = [], preferredLang = 'auto', v
   return rankSourceSubtitleTracks(tracks, preferredLang, videoLang)[0] || null;
 }
 
+export function extractVideoId(input) {
+  if (!input) return '';
+  const str = String(input).trim();
+  const urlMatch = str.match(/(?:v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/);
+  if (urlMatch) return urlMatch[1];
+  if (/^[a-zA-Z0-9_-]{11}$/.test(str)) return str;
+  return str;
+}
+
 function findSourceSubtitleFile(videoId, languageCode = '', kind = '') {
   if (!fs.existsSync(CACHE_DIR)) return null;
-  const prefix = `${videoId}.source.`.toLowerCase();
+  const cleanVid = String(videoId || '').toLowerCase();
+  const prefix = `${cleanVid}.source.`;
   const language = String(languageCode || '').toLowerCase();
   const baseLanguage = language.split('-')[0];
   const files = fs.readdirSync(CACHE_DIR).filter((file) => {
     const lower = file.toLowerCase();
     if (!lower.startsWith(prefix) || !/\.(?:vtt|srt|json)$/i.test(lower)) return false;
-    const match = lower.match(/\.source\.(standard|asr)\.([\w.-]+)\.(?:vtt|srt|json)$/i);
-    if (!match) return false;
-    const kindMatches = !kind || match[1] === kind.toLowerCase();
-    const languageMatches = !language || match[2] === language || match[2].split('-')[0] === baseLanguage;
+    const match = lower.match(/\.source\.(standard|asr)\./i);
+    const fileKind = match ? match[1].toLowerCase() : '';
+    const kindMatches = !kind || fileKind === kind.toLowerCase();
+    const languageMatches = !language ||
+      lower.endsWith(`.${language}.vtt`) ||
+      lower.endsWith(`.${language}.srt`) ||
+      lower.endsWith(`.${language}.json`) ||
+      lower.endsWith(`.${baseLanguage}.vtt`) ||
+      lower.endsWith(`.${baseLanguage}.srt`) ||
+      lower.includes(`.${language}.`) ||
+      lower.includes(`.${baseLanguage}.`);
     return kindMatches && languageMatches;
   });
-  if (!files.length) return null;
+  if (!files.length) {
+    const genericFiles = fs.readdirSync(CACHE_DIR).filter((file) => {
+      const lower = file.toLowerCase();
+      if (!lower.startsWith(`${cleanVid}.`) || !/\.(?:vtt|srt|json)$/i.test(lower)) return false;
+      if (lower.startsWith(prefix)) return false;
+      if (!language || language === 'auto') return true;
+      return lower.includes(`.${language}.`) || lower.includes(`.${baseLanguage}.`) ||
+        lower.endsWith(`.${language}.vtt`) || lower.endsWith(`.${baseLanguage}.vtt`);
+    });
+    if (!genericFiles.length) return null;
+    const genericPath = path.join(CACHE_DIR, genericFiles[0]);
+    return fs.statSync(genericPath).size > 0
+      ? { filePath: genericPath, kind: kind || 'standard', languageCode: languageCode || 'auto' }
+      : null;
+  }
   const filePath = path.join(CACHE_DIR, files[0]);
-  const match = files[0].toLowerCase().match(/\.source\.(standard|asr)\.([\w.-]+)\.(?:vtt|srt|json)$/i);
+  const match = files[0].toLowerCase().match(/\.source\.(standard|asr)\./i);
   return fs.statSync(filePath).size > 0
-    ? { filePath, kind: match[1], languageCode: match[2] }
+    ? { filePath, kind: match ? match[1] : (kind || 'standard'), languageCode: languageCode || 'auto' }
     : null;
 }
 
@@ -589,6 +636,7 @@ export async function downloadOriginalSubtitlesWithYtDlp(videoId, preferredLang 
       if (cues.length) {
         return {
           cues,
+          subtitleText: cues.map((c) => c.text).filter(Boolean).join('\n'),
           trackInfo: {
             languageCode: cachedSource.languageCode,
             name: cachedSource.languageCode,
@@ -624,7 +672,7 @@ export async function downloadOriginalSubtitlesWithYtDlp(videoId, preferredLang 
     let lastFailure = null;
     for (const selected of candidates.slice(0, 3)) {
       console.info(`[LocalServer] Retrieving ${selected.kind === 'asr' ? 'automatic' : 'manual'} ${selected.languageCode} source track for ${safeVideoId}.`);
-      const outputTemplate = path.join(CACHE_DIR, `${safeVideoId}.source.${selected.kind}.%(language)s.%(ext)s`);
+      const outputTemplate = path.join(CACHE_DIR, `${safeVideoId}.source.${selected.kind}.${selected.languageCode}.%(ext)s`);
       const writeFlag = selected.kind === 'asr' ? '--write-auto-subs' : '--write-subs';
       const downloaded = await runYtDlp(safeVideoId, [
         writeFlag,
@@ -646,6 +694,7 @@ export async function downloadOriginalSubtitlesWithYtDlp(videoId, preferredLang 
       console.info(`[LocalServer] Parsed ${cues.length} cue(s) from the ${selected.languageCode} source track for ${safeVideoId}.`);
       return {
         cues,
+        subtitleText: cues.map((c) => c.text).filter(Boolean).join('\n'),
         trackInfo: {
           languageCode: selected.languageCode,
           name: selected.name,
@@ -859,11 +908,12 @@ const server = http.createServer(async (req, res) => {
   // Source-language transcript fallback. Unlike /subtitles, this route never translates
   // another language to satisfy the requested language; it returns a real YouTube track.
   if (pathname === '/original-transcript' && req.method === 'GET') {
-    const videoId = reqUrl.searchParams.get('videoId') || '';
+    const rawVideo = reqUrl.searchParams.get('videoId') || reqUrl.searchParams.get('url') || '';
+    const videoId = extractVideoId(rawVideo);
     const lang = reqUrl.searchParams.get('lang') || 'auto';
     if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, code: 'INVALID_VIDEO_ID', error: 'A valid YouTube video ID is required.' }));
+      res.end(JSON.stringify({ ok: false, code: 'INVALID_VIDEO_ID', error: 'A valid YouTube video ID or URL is required.' }));
       return;
     }
     if (!/^[a-zA-Z0-9_-]{2,15}$/.test(lang)) {
@@ -876,7 +926,12 @@ const server = http.createServer(async (req, res) => {
       const result = await downloadOriginalSubtitlesWithYtDlp(videoId, lang);
       if (result?.unavailable) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, code: 'NO_CAPTIONS', error: 'yt-dlp found no subtitle tracks for this video.' }));
+        res.end(JSON.stringify({ ok: false, code: 'NO_SUBTITLES', error: 'yt-dlp found no subtitle tracks for this video.' }));
+        return;
+      }
+      if (!result?.cues || result.cues.length === 0) {
+        res.writeHead(422, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: 'EMPTY_SUBTITLES', error: 'The downloaded subtitle file was empty or invalid.' }));
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -885,7 +940,7 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       console.warn(`[LocalServer] Original transcript retrieval failed for ${videoId}: ${err.message}`);
       res.writeHead(502, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, code: err.code || 'CAPTION_RETRIEVAL_FAILED', error: err.message }));
+      res.end(JSON.stringify({ ok: false, code: err.code || 'YTDLP_FAILED', error: err.message }));
       return;
     }
   }

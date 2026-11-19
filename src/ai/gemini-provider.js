@@ -2,9 +2,9 @@
  * @fileoverview Google Gemini Provider (`gemini-provider.js`)
  *
  * Implements `BaseAIProvider` for the Google Gemini REST API (`v1beta/models/{model}:generateContent`).
- * Updated for **Gemini 3.8 Flash** (`gemini-3.8-flash`):
- * - Uses `gemini-3.8-flash` as the default model ID (per official Google AI Studio documentation:
- *   https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash and
+ * Updated for **Gemini 3.8 Flash** (`gemini-3.5-flash-lite`):
+ * - Uses `gemini-3.5-flash-lite` as the default model ID (per official Google AI Studio documentation:
+ *   https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite and
  *   https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.8).
  * - Complies with the Gemini 3.6+ / 3.8 migration specification by omitting deprecated sampling
  *   parameters (`temperature`, `topP`, `topK`, `candidateCount`) on Gemini 3.6+ models while
@@ -18,7 +18,7 @@
 import { BaseAIProvider, OpenAICompatibleProvider } from './ai-provider.js';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const FALLBACK_GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-2.5-flash-lite'];
 
 export class GeminiProvider extends BaseAIProvider {
@@ -57,7 +57,7 @@ export class GeminiProvider extends BaseAIProvider {
   }
 
   /**
-   * Builds the `generateContent` request body compatible with `gemini-3.8-flash` and older models.
+   * Builds the `generateContent` request body compatible with `gemini-3.5-flash-lite` and older models.
    */
   buildRequestBody({ systemPrompt, userPrompt, responseSchema = null, temperature = 0.25 }, modelId = this.model) {
     const generationConfig = {

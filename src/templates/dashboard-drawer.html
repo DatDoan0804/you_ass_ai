@@ -1,0 +1,25 @@
+<div class="yt-learn-card">
+  <div class="yt-learn-card-header">
+    <h3 class="yt-learn-concept-title" style="font-size:16px;">📊 Learning Profile &amp; Progress</h3>
+    <button class="yt-learn-btn yt-learn-btn-ghost" id="yt-learn-dash-close">✕</button>
+  </div>
+
+  <div class="yt-learn-card-body">
+    <div class="yt-learn-rubric-grid">
+      <div class="yt-learn-rubric-cell"><span>Completed</span><strong>{{totalCompleted}}</strong></div>
+      <div class="yt-learn-rubric-cell"><span>Avg Mastery</span><strong>{{averageMastery}}%</strong></div>
+      <div class="yt-learn-rubric-cell"><span>This Video</span><strong>{{currentVideoCount}}</strong></div>
+      <div class="yt-learn-rubric-cell"><span>Queued Ahead</span><strong>{{queuedAheadCount}}</strong></div>
+    </div>
+
+    <div style="font-weight:700;font-size:13px;margin-top:6px;">Tracked Concept Mastery (Spaced Repetition)</div>
+    <div style="display:flex;flex-direction:column;gap:5px;">
+      {{conceptRows}}
+    </div>
+
+    <div style="font-weight:700;font-size:13px;margin-top:6px;">Recent Activity History</div>
+    <div style="display:flex;flex-direction:column;gap:5px;">
+      {{historyRows}}
+    </div>
+  </div>
+</div>

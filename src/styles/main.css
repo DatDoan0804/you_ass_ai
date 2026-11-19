@@ -236,6 +236,15 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
+.yt-learn-bar-expanded-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .yt-learn-bar-left,
 .yt-learn-bar-right {
   display: flex;

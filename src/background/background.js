@@ -57,7 +57,8 @@ runtimeApi.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         ok: false,
         error: err?.message || String(err),
-        code: err?.code || 'BACKGROUND_ERROR'
+        code: err?.code || 'BACKGROUND_ERROR',
+        status: err?.status
       });
     });
 
@@ -76,8 +77,12 @@ async function handleMessage(message, tabId) {
   switch (action) {
     case 'REGISTER_VIDEO_SESSION': {
       const { videoId, sessionEpoch } = payload;
-      abortControllersForTab(tabId);
-      activeTabSessions.set(tabId, { videoId, sessionEpoch });
+      const current = activeTabSessions.get(tabId);
+      // Only abort controllers when transitioning to a different video session
+      if (!current || current.videoId !== videoId || current.sessionEpoch !== sessionEpoch) {
+        abortControllersForTab(tabId);
+        activeTabSessions.set(tabId, { videoId, sessionEpoch });
+      }
       return { ok: true, videoId, sessionEpoch };
     }
 
@@ -121,13 +126,13 @@ async function handleMessage(message, tabId) {
     }
 
     case 'FETCH_LOCAL_TRANSCRIPT': {
-      const { videoId, lang = 'auto', port = 8765 } = payload || {};
+      const { videoId, url: videoUrl = '', lang = 'auto', port = 8765 } = payload || {};
       if (!videoId) return { ok: false, code: 'MISSING_VIDEO_ID', error: 'Missing videoId' };
-      const url = `http://127.0.0.1:${port}/original-transcript?videoId=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}`;
+      const endpoint = `http://127.0.0.1:${port}/original-transcript?videoId=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}${videoUrl ? `&url=${encodeURIComponent(videoUrl)}` : ''}`;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 45000);
       try {
-        const res = await fetch(url, { signal: controller.signal });
+        const res = await fetch(endpoint, { signal: controller.signal });
         const data = await res.json().catch(() => ({}));
         return {
           ok: res.ok && data.ok !== false,
@@ -278,6 +283,13 @@ async function executeAiRequest(tabId, action, payload) {
 
   try {
     return await aiJob;
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message || String(err),
+      code: err?.code || 'AI_ERROR',
+      status: err?.status
+    };
   } finally {
     if (cacheKey) {
       inFlightAIRequests.delete(cacheKey);

@@ -27,17 +27,19 @@ import { ContentAnalyzer } from '../ai/content-analyzer.js';
 import { ActivityGenerator } from '../ai/activity-generator.js';
 import { AnswerEvaluator } from '../ai/answer-evaluator.js';
 import { PromptBuilder } from '../ai/prompt-builder.js';
+import { buildVocabularyPrompt, parseVocabularyResponse } from '../ai/vocabulary-analyzer.js';
 import { SubtitleManager } from './subtitle-manager.js';
 import { BreakpointDetector } from './breakpoint-detector.js';
 import { VideoController } from './video-controller.js';
 import { UIManager } from './ui-manager.js';
+import { TemplateLoader } from './template-loader.js';
 
 const runtimeApi =
   typeof browser !== 'undefined' && browser.runtime
     ? browser.runtime
     : typeof chrome !== 'undefined' && chrome.runtime
-    ? chrome.runtime
-    : null;
+      ? chrome.runtime
+      : null;
 
 export function sendBackgroundRequest(action, payload = {}) {
   if (!runtimeApi || typeof runtimeApi.sendMessage !== 'function') {
@@ -335,6 +337,16 @@ export class YouTubeLearningAssistantApp {
       onTimelineMarkerClick: this.handleTimelineMarkerClick.bind(this),
       onOverrideClassification: this.handleOverrideClassification.bind(this),
       onContinueVocabulary: this.handleContinueFromVocabulary.bind(this),
+      onRetryVocabulary: () => {
+        if (this.currentVideoId) {
+          this.prepareVideoVocabulary(this.currentVideoId, this.sessionEpoch);
+        }
+      },
+      onOpenVocabulary: () => {
+        if (this.currentVideoId && this.vocabulary.length === 0 && this.uiManager.vocabularyState !== 'preparing') {
+          this.prepareVideoVocabulary(this.currentVideoId, this.sessionEpoch);
+        }
+      },
       onSeekToTimestamp: (timestamp) => {
         if (typeof timestamp === 'number' && !isNaN(timestamp)) {
           this.log(`[Vocabulary] Seeking video to word timestamp: ${timestamp.toFixed(1)}s`);
@@ -345,6 +357,7 @@ export class YouTubeLearningAssistantApp {
       onRetryMetadataCheck: () => {
         if (this.currentVideoId) {
           this.log('[Breakpoint] Manual retry metadata check triggered.');
+          this.prepareVideoVocabulary(this.currentVideoId, this.sessionEpoch);
           this.scheduleLateMetadataCheck(this.currentVideoId, this.sessionEpoch, 0);
         }
       }
@@ -353,6 +366,7 @@ export class YouTubeLearningAssistantApp {
 
   async start() {
     await db.init();
+    await TemplateLoader.preloadAll();
     this.settings = await Database.getSettings();
     this.breakpointDetector.updateSettings(this.settings);
     this.uiManager.init(this.settings);
@@ -361,7 +375,7 @@ export class YouTubeLearningAssistantApp {
       if (this.uiManager) {
         this.uiManager.setLocalServerStatus(Boolean(res && res.ok));
       }
-    }).catch(() => {});
+    }).catch(() => { });
   }
 
   getEffectiveDuration() {
@@ -439,44 +453,59 @@ export class YouTubeLearningAssistantApp {
 
   async handleVideoChanged({ videoId, sessionEpoch, metadata }) {
     this.log(`[Vocabulary] Video change received: videoId=${videoId || '(none)'}, epoch=${sessionEpoch}, metadata=${Boolean(metadata)}`);
-    this.currentVideoId = videoId;
-    this.sessionEpoch = sessionEpoch;
-    this.videoMetadata = metadata || { videoId, chapters: [], captionTracks: [] };
-    this.videoClassification = null;
-    this.userClassificationOverride = false;
-    this.lastSubtitleResult = null;
-    this.isActivityActive = false;
-    this.chunkSummaries.clear();
-    this.vocabulary = [];
-    this._isFetchingSecondary = false;
-    this._lastSecondaryFetchAttempt = 0;
-    this._secondaryFetchAttempts = 0;
-    if (videoId) {
-      this.activityGenerator.resetHistory(videoId);
-    }
-    this.breakpointDetector.reset();
-    this.uiManager.closeOverlay();
-    this.uiManager.clearDualSubtitles();
-    this.uiManager.setVideoClassification(null, false);
-    this.uiManager.setVocabulary([]);
-    this.vocabularyPrepGate = false;
-    this.videoController.setPlaybackGate(false);
-    this.uiManager.setVocabularyPrepGate(false);
-    this.syncTimelineMarkers();
 
-    if (!videoId) {
+    const isSameSession = Boolean(videoId) &&
+      this.currentVideoId === videoId &&
+      this.sessionEpoch === sessionEpoch;
+
+    if (!isSameSession) {
+      this.currentVideoId = videoId;
+      this.sessionEpoch = sessionEpoch;
+      this.videoMetadata = metadata || { videoId, chapters: [], captionTracks: [] };
+      this.videoClassification = null;
+      this.userClassificationOverride = false;
+      this.lastSubtitleResult = null;
+      this.isActivityActive = false;
+      this.chunkSummaries.clear();
+      this.vocabulary = [];
+      this._isFetchingSecondary = false;
+      this._lastSecondaryFetchAttempt = 0;
+      this._secondaryFetchAttempts = 0;
+      if (videoId) {
+        this.activityGenerator.resetHistory(videoId);
+      }
+      this.breakpointDetector.reset();
+      this.uiManager.closeOverlay();
+      this.uiManager.clearDualSubtitles();
+      this.uiManager.setVideoClassification(null, false);
+      this.uiManager.setVocabulary([]);
+      this.vocabularyPrepGate = false;
+      this.videoController.setPlaybackGate(false);
+      this.uiManager.setVocabularyPrepGate(false);
+      this.syncTimelineMarkers();
+
+      if (!videoId) {
+        this.uiManager.mountDedicatedBarInSafeSlot();
+        return;
+      }
+
       this.uiManager.mountDedicatedBarInSafeSlot();
-      return;
-    }
+      this.vocabularyPrepGate = Boolean(this.settings.enableVocabularyPrep);
+      this.videoController.setPlaybackGate(this.vocabularyPrepGate);
+      this.uiManager.setVocabularyPrepGate(this.vocabularyPrepGate);
+      this.uiManager.setStatus(this.vocabularyPrepGate ? 'Preparing vocabulary...' : 'Loading Captions...', 'preparing');
 
-    this.uiManager.mountDedicatedBarInSafeSlot();
-    this.vocabularyPrepGate = this.settings.enabled !== false && this.settings.enableVocabularyPrep !== false;
-    this.videoController.setPlaybackGate(this.vocabularyPrepGate);
-    this.uiManager.setVocabularyPrepGate(this.vocabularyPrepGate);
-    this.uiManager.setStatus(this.vocabularyPrepGate ? 'Preparing vocabulary...' : 'Loading Captions...', 'preparing');
-    if (this.vocabularyPrepGate) {
-      this.uiManager.setVocabularyStatus('preparing');
-      this.uiManager.showVocabularyDrawer();
+      await this.requestHandler('REGISTER_VIDEO_SESSION', { videoId, sessionEpoch }).catch(() => { });
+
+      if (this.vocabularyPrepGate) {
+        this.uiManager.setVocabularyStatus('preparing', 'Retrieving subtitles with yt-dlp...');
+        this.uiManager.showVocabularyDrawer();
+        this.prepareVideoVocabulary(videoId, sessionEpoch);
+      }
+    } else {
+      if (metadata) {
+        this.videoMetadata = metadata;
+      }
     }
 
     if (!metadata) {
@@ -485,12 +514,12 @@ export class YouTubeLearningAssistantApp {
       return;
     }
 
-    await this.requestHandler('REGISTER_VIDEO_SESSION', { videoId, sessionEpoch }).catch(() => {});
+    await this.requestHandler('REGISTER_VIDEO_SESSION', { videoId, sessionEpoch }).catch(() => { });
     this.requestHandler('CHECK_LOCAL_SUB_SERVER', {}).then((res) => {
       if (this.uiManager) {
         this.uiManager.setLocalServerStatus(Boolean(res && res.ok));
       }
-    }).catch(() => {});
+    }).catch(() => { });
 
     let demandSecondaryLang = (this.settings.enableDualSubtitles !== false)
       ? (this.settings.secondarySubtitleLang || 'en')
@@ -503,7 +532,7 @@ export class YouTubeLearningAssistantApp {
       const targetPrefix = demandSecondaryLang.split('-')[0].toLowerCase();
       const matched = videoTracks.find(
         (t) => (t.languageCode || '').toLowerCase() === demandSecondaryLang.toLowerCase() ||
-               (t.languageCode || '').toLowerCase().startsWith(targetPrefix)
+          (t.languageCode || '').toLowerCase().startsWith(targetPrefix)
       );
       if (matched) {
         demandSecondaryLang = matched.languageCode;
@@ -528,7 +557,7 @@ export class YouTubeLearningAssistantApp {
       subtitleLoadError = err;
       this.log(`[Vocabulary] Subtitle extraction failed for ${videoId}: ${err.message}`);
       subtitleResult = { hasSubtitles: false, cues: [], chunks: [], primaryCues: [], availableTracks: [] };
-      if (this.vocabularyPrepGate) {
+      if (this.vocabularyPrepGate && this.uiManager.vocabularyState !== 'preparing' && this.uiManager.vocabularyState !== 'ready') {
         this.uiManager.setVocabularyStatus('error', `Could not read this video’s captions (${err.message}). You can add words yourself or continue.`);
       }
     }
@@ -581,37 +610,15 @@ export class YouTubeLearningAssistantApp {
           trackInfo: this.subtitleManager.primaryTrack,
           secondaryCues: this.subtitleManager.secondaryCues,
           secondaryTrack: this.subtitleManager.secondaryTrack
-        }).catch(() => {});
+        }).catch(() => { });
       }
       this.lastSubtitleResult = subtitleResult;
-      if (this.vocabularyPrepGate) await this.prepareVideoVocabulary(videoId, sessionEpoch, originalCues);
+      if (this.vocabularyPrepGate && this.vocabulary.length === 0 && this.uiManager.vocabularyState === 'preparing') {
+        this.prepareVideoVocabulary(videoId, sessionEpoch, originalCues);
+      }
     } else {
       const tracks = this.videoMetadata?.captionTracks || [];
       const availability = this.videoMetadata?.captionAvailability || 'unknown';
-      if (this.vocabularyPrepGate) {
-        if (tracks.length > 0) {
-          const fetchStatus = this.subtitleManager.lastFetchStatus || {};
-          const detail = originalTranscriptError?.message || subtitleLoadError?.message || fetchStatus.message;
-          this.uiManager.setVocabularyStatus(
-            'error',
-            `YouTube listed ${tracks.length} caption track(s), but the transcript could not be read${detail ? `: ${detail}` : '.'} We’ll check again; you can retry or continue.`
-          );
-        } else if (availability === 'unavailable') {
-          this.uiManager.setVocabularyStatus(
-            'unavailable',
-            'YouTube did not provide caption tracks after repeated checks. We did not invent vocabulary; add words yourself or continue to the video.'
-          );
-        } else {
-          const fetchStatus = this.subtitleManager.lastFetchStatus || {};
-          const fetchFailed = ['temporary-failure', 'metadata-failed', 'content-failed', 'parsing-failed', 'extraction-failed'].includes(fetchStatus.state);
-          if (subtitleLoadError || originalTranscriptError || fetchFailed) {
-            const detail = originalTranscriptError?.message || subtitleLoadError?.message || fetchStatus.message || 'The caption service could not be reached.';
-            this.uiManager.setVocabularyStatus('error', `Could not retrieve captions (${detail}). We’ll check again; you can retry or continue.`);
-          } else {
-            this.uiManager.setVocabularyStatus('preparing', 'Caption availability is not confirmed yet. Checking again before we decide.');
-          }
-        }
-      }
       if (tracks.length > 0 || availability !== 'unavailable') {
         this.scheduleLateMetadataCheck(videoId, sessionEpoch, 0);
       }
@@ -738,7 +745,7 @@ export class YouTubeLearningAssistantApp {
         primaryTrack: track,
         secondaryCues: this.subtitleManager.secondaryCues || cached?.secondaryCues || [],
         secondaryTrack: this.subtitleManager.secondaryTrack || cached?.secondaryTrack || null
-      }).catch(() => {});
+      }).catch(() => { });
       this.videoMetadata.captionAvailability = 'available';
       this.log(`[Captions] Original transcript extracted via ${source}: language=${track.languageCode || 'unknown'}, type=${track.isAutoGenerated ? 'automatic' : 'manual'}, cues=${cleanCues.length}, characters=${cleanCues.reduce((n, cue) => n + String(cue.text || '').length, 0)}.`);
       return cleanCues;
@@ -806,9 +813,9 @@ export class YouTubeLearningAssistantApp {
         const code = localResponse.code || 'LOCAL_TRANSCRIPT_FAILED';
         const state = code === 'CAPTION_PARSE_FAILED' ? 'parsing-failed'
           : code === 'CAPTION_CONTENT_FAILED' ? 'content-failed'
-          : code === 'CAPTION_METADATA_FAILED' ? 'metadata-failed'
-          : code === 'NO_CAPTIONS' ? 'unavailable'
-          : 'temporary-failure';
+            : code === 'CAPTION_METADATA_FAILED' ? 'metadata-failed'
+              : code === 'NO_CAPTIONS' ? 'unavailable'
+                : 'temporary-failure';
         this.log(`[Captions] yt-dlp fallback failed: code=${code}, status=${localResponse.status || 'none'}, error=${localResponse.error || 'none'}.`);
         if (!lastError || this.subtitleManager.lastFetchStatus?.state === 'unknown') {
           this.subtitleManager.lastFetchStatus = { state, code, status: localResponse.status, message: localResponse.error || 'Local transcript retrieval failed.' };
@@ -832,6 +839,14 @@ export class YouTubeLearningAssistantApp {
 
   static validateVocabularyResponse(response, transcriptCues = []) {
     const rawItems = Array.isArray(response?.vocabulary) ? response.vocabulary : [];
+    if (!Array.isArray(transcriptCues) || transcriptCues.length === 0) {
+      try {
+        const words = parseVocabularyResponse(response);
+        return { words, received: rawItems.length, rejected: {} };
+      } catch {
+        return { words: [], received: 0, rejected: { malformed: 1 } };
+      }
+    }
     const normalize = (value) => String(value || '')
       .normalize('NFKC')
       .toLocaleLowerCase()
@@ -890,69 +905,179 @@ export class YouTubeLearningAssistantApp {
     return { words: validated, received: rawItems.length, rejected };
   }
 
-  async prepareVideoVocabulary(videoId, sessionEpoch, transcriptCues) {
-    if (!Array.isArray(transcriptCues) || transcriptCues.length === 0) {
-      this.uiManager.setVocabularyStatus('unavailable');
+  /**
+   * Rebuilt Vocabulary Preparation Pipeline:
+   * 1. Get current YouTube video URL.
+   * 2. Use yt-dlp to download subtitles.
+   * 3. Retrieve complete subtitle text, preferably in video's original language.
+   * 4. Send entire subtitle text to Gemini API in a single request.
+   * 5. Ask Gemini to analyze subtitles and identify useful vocabulary.
+   * 6. Receive generated vocabulary and display in the interface.
+   */
+  async prepareVideoVocabulary(videoId, sessionEpoch = this.sessionEpoch, inputArg = '') {
+    if (!videoId) return;
+
+    if (this._inFlightVocabVideoId === videoId && this._inFlightVocabEpoch === sessionEpoch && !Array.isArray(inputArg)) {
+      this.log(`[Vocabulary] Preparation already in flight for ${videoId} at epoch ${sessionEpoch}.`);
       return;
     }
+    this._inFlightVocabVideoId = videoId;
+    this._inFlightVocabEpoch = sessionEpoch;
+
+    this.log(`[Vocabulary] Starting vocabulary preparation pipeline: videoId=${videoId}, epoch=${sessionEpoch}`);
+    this.uiManager.setVocabularyStatus('preparing', 'Retrieving subtitles with yt-dlp...');
 
     try {
-      this.uiManager.setVocabularyStatus('preparing');
-      const transcriptLanguage = this.subtitleManager.primaryTrack?.name ||
-        this.subtitleManager.primaryTrack?.languageCode || 'the video language';
-      const translationLanguage = this.settings.vocabularyTranslationLanguage || 'English';
-      const learnerLevel = this.settings.vocabularyLevel || 'B1';
-      const promptSpec = PromptBuilder.buildVideoVocabularyPrompt({
-        videoTitle: this.videoMetadata?.title || '',
-        transcriptCues,
-        transcriptLanguage,
-        translationLanguage,
-        learnerLevel
-      });
-      const transcriptTrack = this.subtitleManager.primaryTrack?.languageCode || 'auto';
-      const cacheKey = `video_vocab_${videoId}_${transcriptTrack}_${learnerLevel}_${translationLanguage.toLowerCase()}`;
-      const response = await this.requestHandler('AI_GENERATE_VIDEO_VOCABULARY', {
+      let subtitleText = '';
+      let cues = [];
+
+      if (Array.isArray(inputArg) && inputArg.length > 0) {
+        cues = inputArg;
+        subtitleText = cues.map((c) => (c && c.text ? c.text : '')).filter(Boolean).join('\n');
+      } else {
+        const existingCues = (this.subtitleManager?.primaryCues?.length > 0 && this.subtitleManager.primaryCues) ||
+          (this.lastSubtitleResult?.primaryCues?.length > 0 && this.lastSubtitleResult.primaryCues) ||
+          (this.subtitleManager?.cues?.length > 0 && this.subtitleManager.cues) ||
+          (this.lastSubtitleResult?.cues?.length > 0 && this.lastSubtitleResult.cues) || [];
+
+        const currentUrl = (typeof inputArg === 'string' && inputArg.trim())
+          ? inputArg.trim()
+          : (typeof window !== 'undefined' ? window.location?.href : '') || `https://www.youtube.com/watch?v=${videoId}`;
+
+        let subResponse = null;
+        try {
+          subResponse = await this.requestHandler('FETCH_LOCAL_TRANSCRIPT', {
+            videoId,
+            url: currentUrl,
+            lang: this.settings?.primarySubtitleLang || 'auto'
+          });
+        } catch (fetchErr) {
+          subResponse = { ok: false, error: fetchErr.message, code: 'LOCAL_SERVER_OFFLINE', isServerOffline: true };
+        }
+
+        if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
+          this.log(`[Vocabulary] Discarding response for ${videoId}; session expired.`);
+          return;
+        }
+
+        if (subResponse && subResponse.ok && subResponse.data) {
+          cues = Array.isArray(subResponse.data?.cues) ? subResponse.data.cues : [];
+          subtitleText = typeof subResponse.data?.subtitleText === 'string' ? subResponse.data.subtitleText : '';
+          if (!subtitleText && cues.length > 0) {
+            subtitleText = cues.map((c) => (c && c.text ? c.text : '')).filter(Boolean).join('\n');
+          }
+        }
+
+        // If local server didn't yield subtitles, fallback to existing cues or YouTube native captions
+        if (!subtitleText || !subtitleText.trim()) {
+          if (existingCues.length > 0 && this.currentVideoId === videoId) {
+            cues = existingCues;
+            subtitleText = cues.map((c) => (c && c.text ? c.text : '')).filter(Boolean).join('\n');
+            this.log(`[Vocabulary] Using ${cues.length} existing cues for vocabulary.`);
+          } else {
+            try {
+              const fallbackCues = await this.getOriginalTranscriptCues(this.lastSubtitleResult || {});
+              if (Array.isArray(fallbackCues) && fallbackCues.length > 0) {
+                cues = fallbackCues;
+                subtitleText = cues.map((c) => (c && c.text ? c.text : '')).filter(Boolean).join('\n');
+                this.log(`[Vocabulary] Using ${cues.length} native captions fallback cues for vocabulary.`);
+              }
+            } catch (fallbackErr) {
+              this.log(`[Vocabulary] Native captions fallback failed: ${fallbackErr.message}`);
+            }
+          }
+        }
+
+        if (!subtitleText || !subtitleText.trim()) {
+          if (subResponse && subResponse.ok) {
+            this.uiManager.setVocabularyStatus('error', 'The downloaded subtitle file is empty or contains no valid text.');
+            return;
+          }
+          const code = subResponse?.code;
+          const detail = subResponse?.error || 'Failed to download subtitles.';
+          if (code === 'NO_SUBTITLES' || subResponse?.status === 404) {
+            this.uiManager.setVocabularyStatus('unavailable', 'This video has no available subtitles. Subtitles are required to prepare vocabulary.');
+            return;
+          }
+          if (code === 'LOCAL_SERVER_OFFLINE' || subResponse?.isServerOffline) {
+            this.uiManager.setVocabularyStatus('error', 'Local subtitle server is not reachable on port 8765. Start the server (npm run server) to enable yt-dlp subtitle download.');
+            return;
+          }
+          if (code === 'EMPTY_SUBTITLES' || subResponse?.status === 422) {
+            this.uiManager.setVocabularyStatus('error', 'The downloaded subtitle file is empty or invalid.');
+            return;
+          }
+          this.uiManager.setVocabularyStatus('error', `Failed to retrieve subtitles with yt-dlp: ${detail}`);
+          return;
+        }
+      }
+
+      if (!subtitleText || !subtitleText.trim()) {
+        this.uiManager.setVocabularyStatus('error', 'The downloaded subtitle file is empty or contains no valid text.');
+        return;
+      }
+
+      this.uiManager.setVocabularyStatus('preparing', 'Gemini is analyzing video subtitles for vocabulary...');
+      const videoTitle = this.videoMetadata?.title ||
+        (typeof document !== 'undefined' ? String(document.title || '').replace(/\s*-\s*YouTube$/i, '').trim() : '') ||
+        '';
+      const promptSpec = buildVocabularyPrompt({ videoTitle, subtitleText });
+      const cacheKey = `video_vocab_${videoId}`;
+
+      const aiResponse = await this.requestHandler('AI_GENERATE_VIDEO_VOCABULARY', {
         videoId,
         sessionEpoch,
         cacheKey,
         promptSpec
       });
-      this.log(`[Vocabulary] Gemini vocabulary request returned for ${videoId}: ok=${Boolean(response?.ok)}, cached=${Boolean(response?.cached)}, error=${response?.error || 'none'}, code=${response?.code || 'none'}`);
+
       if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
-        this.log(`[Vocabulary] Ignoring stale Gemini response for ${videoId} at epoch ${sessionEpoch}.`);
+        this.log(`[Vocabulary] Discarding Gemini response for ${videoId}; session expired.`);
         return;
       }
-      if (!response?.ok) {
-        const error = new Error(response?.error || 'Vocabulary service unavailable.');
-        error.status = response?.status;
-        error.code = response?.code;
-        if (!error.status && /(?:429|rate.?limit)/i.test(error.message)) error.status = 429;
-        throw error;
+
+      if (!aiResponse || !aiResponse.ok) {
+        const errorMsg = aiResponse?.error || 'Gemini API request failed.';
+        const status = aiResponse?.status;
+        const code = aiResponse?.code;
+
+        if (code === 'MISSING_API_KEY') {
+          this.uiManager.setVocabularyStatus('error', 'Please configure your Google Gemini API key in Settings (⚙️).');
+          return;
+        }
+        if (status === 429 || code === 'RATE_LIMITED' || /(?:429|rate.?limit)/i.test(errorMsg)) {
+          this.uiManager.setVocabularyStatus('error', 'Gemini is temporarily rate-limited (HTTP 429). Please wait a moment and retry.');
+          return;
+        }
+        this.uiManager.setVocabularyStatus('error', `Gemini API request failed: ${errorMsg}`);
+        return;
       }
 
-      const validation = YouTubeLearningAssistantApp.validateVocabularyResponse(response.data, transcriptCues);
-      const words = validation.words;
-      this.log(`[Vocabulary] Validation for ${videoId}: received=${validation.received}, accepted=${words.length}, rejected=${JSON.stringify(validation.rejected)}`);
+      let words = [];
+      try {
+        words = parseVocabularyResponse(aiResponse.data);
+      } catch (err) {
+        this.uiManager.setVocabularyStatus('error', 'Gemini returned malformed or unexpected data.');
+        return;
+      }
+
+      if (words.length === 0) {
+        this.uiManager.setVocabularyStatus('empty', 'Gemini analyzed the subtitles but found no key vocabulary to prepare.');
+        return;
+      }
+
       this.vocabulary = words;
       this.uiManager.setVocabulary(words);
-      if (words.length > 0) {
-        this.uiManager.setVocabularyStatus('ready');
-        this.log(`[Vocabulary] Prepared and transcript-validated ${words.length} cards.`);
-      } else {
-        this.uiManager.setVocabularyStatus(
-          'empty',
-          'The captions did not contain enough reliable, level-appropriate vocabulary. Add a word yourself or continue to the video.'
-        );
-      }
+      this.log(`[Vocabulary] Successfully prepared ${words.length} vocabulary items with Gemini.`);
     } catch (err) {
       if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
-      this.log(`[Vocabulary] Preparation failed: ${err.message}`);
-      const message = err.code === 'MISSING_API_KEY'
-        ? 'Add your Gemini API key in Settings, then try again. You can continue to the video now.'
-        : err.status === 429 || err.code === 'RATE_LIMITED'
-        ? 'Gemini is temporarily rate-limited. You can add words yourself or continue to the video.'
-        : 'The vocabulary response could not be verified. Add words yourself or continue to the video.';
-      this.uiManager.setVocabularyStatus('error', message);
+      this.log(`[Vocabulary] Preparation pipeline failed: ${err.message}`);
+      this.uiManager.setVocabularyStatus('error', `Vocabulary preparation failed: ${err.message}`);
+    } finally {
+      if (this._inFlightVocabVideoId === videoId && this._inFlightVocabEpoch === sessionEpoch) {
+        this._inFlightVocabVideoId = null;
+        this._inFlightVocabEpoch = null;
+      }
     }
   }
 
@@ -1138,11 +1263,11 @@ export class YouTubeLearningAssistantApp {
                   trackInfo: this.subtitleManager.primaryTrack,
                   secondaryCues: this.subtitleManager.secondaryCues,
                   secondaryTrack: this.subtitleManager.secondaryTrack
-                }).catch(() => {});
+                }).catch(() => { });
               }
               this.lastSubtitleResult = result;
               this.log(`[Captions] Late transcript extraction succeeded for ${videoId}: ${primaryCues.length} cue(s).`);
-              if (this.vocabularyPrepGate) await this.prepareVideoVocabulary(videoId, sessionEpoch, primaryCues);
+              if (this.vocabularyPrepGate && this.vocabulary.length === 0) await this.prepareVideoVocabulary(videoId, sessionEpoch, primaryCues);
               if (!this.videoController.isSessionValid(videoId, sessionEpoch)) {
                 this._lateCaptionRetrySessions.delete(retryKey);
                 return;
@@ -1215,7 +1340,7 @@ export class YouTubeLearningAssistantApp {
             const cues = this.subtitleManager.getActiveDualCues(cur);
             this.uiManager.renderDualSubtitles(cues, this.settings);
           }
-        }).catch(() => {}).finally(() => {
+        }).catch(() => { }).finally(() => {
           this._isFetchingSecondary = false;
         });
       }
@@ -1302,15 +1427,15 @@ export class YouTubeLearningAssistantApp {
         const analysis =
           this.settings.useAiBreakpoints !== false
             ? await this.contentAnalyzer.analyzeChunk({
-                videoId,
-                sessionEpoch,
-                videoTitle: this.videoMetadata?.title || '',
-                videoDescription: this.videoMetadata?.shortDescription || '',
-                chunk,
-                nextChunk,
-                previousChunkSummary,
-                learnerContext
-              })
+              videoId,
+              sessionEpoch,
+              videoTitle: this.videoMetadata?.title || '',
+              videoDescription: this.videoMetadata?.shortDescription || '',
+              chunk,
+              nextChunk,
+              previousChunkSummary,
+              learnerContext
+            })
             : ContentAnalyzer.heuristicAnalysis(chunk, this.videoMetadata?.title || '');
 
         if (!this.videoController.isSessionValid(videoId, sessionEpoch)) return;
@@ -1619,7 +1744,7 @@ export class YouTubeLearningAssistantApp {
     }
 
     this.uiManager.updateSettings(saved);
-    await this.requestHandler('SAVE_SETTINGS', { settings: saved }).catch(() => {});
+    await this.requestHandler('SAVE_SETTINGS', { settings: saved }).catch(() => { });
   }
 
   async handleLoadDashboardData() {

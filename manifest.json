@@ -30,6 +30,8 @@
     {
       "resources": [
         "src/content/*.js",
+        "src/content/components/*.js",
+        "src/templates/*.html",
         "src/ai/*.js",
         "src/learning/*.js",
         "src/storage/*.js",
