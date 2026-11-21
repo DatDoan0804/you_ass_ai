@@ -1328,13 +1328,6 @@ export class UIManager {
     this.activePanel = 'vocabulary';
     if (!this.rootContainer && typeof document.createElement !== 'function') return;
 
-    const wrapper = typeof document.createElement === 'function'
-      ? document.createElement('div')
-      : { querySelector: () => null, querySelectorAll: () => [] };
-    if (wrapper && typeof wrapper.setAttribute === 'function') {
-      wrapper.className = 'yt-learn-overlay-backdrop yt-learn-vocab-backdrop';
-    }
-
     const vnode = html`<${VocabularyDrawer}
       words=${this.vocabulary}
       state=${this.vocabularyState}
@@ -1363,18 +1356,14 @@ export class UIManager {
       }}
     />`;
 
-    mountComponent(vnode, wrapper);
+    // Mount directly into the shared overlay root so closeOverlay() can unmount
+    // the component and clean up its window-level keyboard listener.
+    mountComponent(vnode, this.rootContainer);
 
-    if (this.rootContainer) {
-      if (typeof this.rootContainer.appendChild === 'function') {
-        this.rootContainer.appendChild(wrapper);
-      }
-    }
-
-    const isPlainMockWrapper = !wrapper || typeof wrapper.nodeType !== 'number';
-    if (isPlainMockWrapper) {
-      wrapper.querySelector?.('#yt-learn-vocab-close')?.addEventListener?.('click', () => this.closeOverlay());
-      wrapper.querySelector?.('#yt-learn-vocab-retry')?.addEventListener?.('click', () => {
+    const isPlainMockRoot = !this.rootContainer || typeof this.rootContainer.nodeType !== 'number';
+    if (isPlainMockRoot) {
+      this.rootContainer?.querySelector?.('#yt-learn-vocab-close')?.addEventListener?.('click', () => this.closeOverlay());
+      this.rootContainer?.querySelector?.('#yt-learn-vocab-retry')?.addEventListener?.('click', () => {
         this.setVocabularyStatus('preparing', 'Retrieving subtitles with yt-dlp and analyzing vocabulary...');
         if (typeof this.callbacks.onRetryVocabulary === 'function') {
           this.callbacks.onRetryVocabulary();
@@ -1382,14 +1371,14 @@ export class UIManager {
           this.callbacks.onRetryMetadataCheck();
         }
       });
-      wrapper.querySelector?.('#yt-learn-vocab-continue')?.addEventListener?.('click', () => {
+      this.rootContainer?.querySelector?.('#yt-learn-vocab-continue')?.addEventListener?.('click', () => {
         if (this.vocabularyPrepGate && typeof this.callbacks.onContinueVocabulary === 'function') {
           this.callbacks.onContinueVocabulary();
         } else {
           this.closeOverlay();
         }
       });
-      wrapper.querySelectorAll?.('.yt-learn-timestamp-btn')?.forEach?.((btn) => {
+      this.rootContainer?.querySelectorAll?.('.yt-learn-timestamp-btn')?.forEach?.((btn) => {
         btn.addEventListener?.('click', (e) => {
           const time = parseFloat(e.currentTarget?.getAttribute?.('data-time'));
           if (!isNaN(time) && typeof this.callbacks.onSeekToTimestamp === 'function') {

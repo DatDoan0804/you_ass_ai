@@ -368,7 +368,7 @@
   position: fixed;
   top: 60px;
   right: 18px;
-  bottom: 84px;
+  bottom: auto;
   width: min(385px, 32vw);
   z-index: 2147483646;
   display: flex;
@@ -868,6 +868,7 @@
     opacity: 0;
     transform: translateX(24px);
   }
+
   to {
     opacity: 1;
     transform: translateX(0);
@@ -879,6 +880,7 @@
     opacity: 0;
     transform: translateY(14px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -1059,7 +1061,8 @@
   border-radius: 8px;
   border: 1px solid rgba(253, 224, 71, 0.45);
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
-  pointer-events: auto; /* Enable dragging & repositioning */
+  pointer-events: auto;
+  /* Enable dragging & repositioning */
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
@@ -1085,7 +1088,8 @@
   font-weight: 600;
   text-rendering: optimizeLegibility;
   word-break: break-word;
-  pointer-events: none; /* Passes mouse/pointer events directly to the draggable box */
+  pointer-events: none;
+  /* Passes mouse/pointer events directly to the draggable box */
 }
 
 /* Primary Subtitle Line: Kept display: none in companion mode so YouTube's native captions show as the main subtitle */
@@ -1210,43 +1214,252 @@
 }
 
 .yt-learn-vocab-subtitle,
-.yt-learn-vocab-hint { color: #94a3b8; font-size: 12px; margin-top: 4px; }
-.yt-learn-vocab-progress-label { display:flex; justify-content:space-between; color:#cbd5e1; font-size:12px; margin:2px 0 7px; }
-.yt-learn-vocab-progress { height:5px; background:#1e293b; border-radius:8px; overflow:hidden; margin-bottom:20px; }
-.yt-learn-vocab-progress span { display:block; height:100%; background:#38bdf8; border-radius:8px; transition:width .2s ease; }
-.yt-learn-vocab-flashcard { min-height:230px; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:28px 24px; border:1px solid rgba(148,163,184,.2); border-radius:14px; background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(11,17,32,.96)); }
-.yt-learn-vocab-card-kicker { color:#7dd3fc; font-size:10px; font-weight:800; letter-spacing:1.5px; margin-bottom:18px; }
-.yt-learn-vocab-card-word { color:#f8fafc; font-size:clamp(27px,5vw,40px); font-weight:750; line-height:1.2; overflow-wrap:anywhere; }
-.yt-learn-vocab-pron { color:#94a3b8; font-size:13px; margin-top:9px; }
-.yt-learn-vocab-prompt { color:#94a3b8; font-size:13px; margin:22px 0 0; }
-.yt-learn-vocab-answer { width:100%; margin-top:20px; padding-top:16px; border-top:1px solid rgba(148,163,184,.16); }
-.yt-learn-vocab-meaning { color:#f1f5f9; font-size:19px; font-weight:600; line-height:1.45; }
-.yt-learn-vocab-answer blockquote { margin:12px auto 0; max-width:470px; padding:9px 12px; border-left:3px solid #38bdf8; border-radius:4px; background:rgba(30,41,59,.55); color:#cbd5e1; text-align:left; font-size:13px; }
-.yt-learn-vocab-explanation { color:#cbd5e1; font-size:14px; line-height:1.5; margin-top:8px; }
-.yt-learn-vocab-context-meaning { color:#7dd3fc; font-size:13px; line-height:1.5; margin-top:8px; }
-.yt-learn-vocab-actions { display:flex; gap:10px; justify-content:center; margin-top:16px; }
-.yt-learn-vocab-actions button { min-width:145px; }
-.yt-learn-vocab-reveal { display:block; margin:16px auto 0; min-width:190px; }
-.yt-learn-vocab-secondary-actions { display:flex; justify-content:center; margin-top:12px; }
-.yt-learn-vocab-secondary-actions button { color:#94a3b8; font-size:12px; }
-.yt-learn-vocab-add-form { display:flex; flex-direction:column; gap:8px; max-width:440px; width:100%; margin:14px auto 0; }
-.yt-learn-vocab-add-form input { width:100%; box-sizing:border-box; background:#0b1120; border:1px solid var(--yt-learn-border); border-radius:7px; padding:9px 11px; color:#f1f5f9; font:13px var(--yt-learn-font); }
-.yt-learn-vocab-add-form input:focus { outline:1px solid var(--yt-learn-accent); }
-.yt-learn-vocab-add-form .yt-learn-btn { align-self:center; }
-.yt-learn-vocab-add-form.is-hidden { display:none; }
-.yt-learn-vocab-empty, .yt-learn-vocab-complete { text-align:center; padding:28px 18px; color:#cbd5e1; }
-.yt-learn-vocab-empty h4, .yt-learn-vocab-complete h4 { margin:8px 0; color:#f8fafc; font-size:18px; }
-.yt-learn-vocab-empty p, .yt-learn-vocab-complete p { color:#94a3b8; font-size:13px; line-height:1.5; }
-.yt-learn-vocab-empty-icon { font-size:28px; }
-.yt-learn-vocab-complete .yt-learn-btn { margin-top:8px; }
-.yt-learn-vocab-card .yt-learn-card-body { padding:20px; }
-.yt-learn-vocab-card .yt-learn-card-footer { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 18px; border-top:1px solid rgba(148,163,184,.15); color:#94a3b8; font-size:11px; }
-.yt-learn-vocab-study .yt-learn-timestamp-btn { margin-top:12px; padding:6px 10px; border-radius:6px; background:rgba(56,189,248,.12); border:1px solid rgba(56,189,248,.3); color:#7dd3fc; cursor:pointer; }
+.yt-learn-vocab-hint {
+  color: #94a3b8;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.yt-learn-vocab-progress-label {
+  display: flex;
+  justify-content: space-between;
+  color: #cbd5e1;
+  font-size: 12px;
+  margin: 2px 0 7px;
+}
+
+.yt-learn-vocab-progress {
+  height: 5px;
+  background: #1e293b;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+
+.yt-learn-vocab-progress span {
+  display: block;
+  height: 100%;
+  background: #38bdf8;
+  border-radius: 8px;
+  transition: width .2s ease;
+}
+
+.yt-learn-vocab-flashcard {
+  min-height: 230px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 28px 24px;
+  border: 1px solid rgba(148, 163, 184, .2);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(15, 23, 42, .96), rgba(11, 17, 32, .96));
+}
+
+.yt-learn-vocab-card-kicker {
+  color: #7dd3fc;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  margin-bottom: 18px;
+}
+
+.yt-learn-vocab-card-word {
+  color: #f8fafc;
+  font-size: clamp(27px, 5vw, 40px);
+  font-weight: 750;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.yt-learn-vocab-pron {
+  color: #94a3b8;
+  font-size: 13px;
+  margin-top: 9px;
+}
+
+.yt-learn-vocab-prompt {
+  color: #94a3b8;
+  font-size: 13px;
+  margin: 22px 0 0;
+}
+
+.yt-learn-vocab-answer {
+  width: 100%;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(148, 163, 184, .16);
+}
+
+.yt-learn-vocab-meaning {
+  color: #f1f5f9;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.yt-learn-vocab-answer blockquote {
+  margin: 12px auto 0;
+  max-width: 470px;
+  padding: 9px 12px;
+  border-left: 3px solid #38bdf8;
+  border-radius: 4px;
+  background: rgba(30, 41, 59, .55);
+  color: #cbd5e1;
+  text-align: left;
+  font-size: 13px;
+}
+
+.yt-learn-vocab-explanation {
+  color: #cbd5e1;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+.yt-learn-vocab-context-meaning {
+  color: #7dd3fc;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+.yt-learn-vocab-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.yt-learn-vocab-actions button {
+  min-width: 145px;
+}
+
+.yt-learn-vocab-reveal {
+  display: block;
+  margin: 16px auto 0;
+  min-width: 190px;
+}
+
+.yt-learn-vocab-secondary-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.yt-learn-vocab-secondary-actions button {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.yt-learn-vocab-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 440px;
+  width: 100%;
+  margin: 14px auto 0;
+}
+
+.yt-learn-vocab-add-form input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0b1120;
+  border: 1px solid var(--yt-learn-border);
+  border-radius: 7px;
+  padding: 9px 11px;
+  color: #f1f5f9;
+  font: 13px var(--yt-learn-font);
+}
+
+.yt-learn-vocab-add-form input:focus {
+  outline: 1px solid var(--yt-learn-accent);
+}
+
+.yt-learn-vocab-add-form .yt-learn-btn {
+  align-self: center;
+}
+
+.yt-learn-vocab-add-form.is-hidden {
+  display: none;
+}
+
+.yt-learn-vocab-empty,
+.yt-learn-vocab-complete {
+  text-align: center;
+  padding: 28px 18px;
+  color: #cbd5e1;
+}
+
+.yt-learn-vocab-empty h4,
+.yt-learn-vocab-complete h4 {
+  margin: 8px 0;
+  color: #f8fafc;
+  font-size: 18px;
+}
+
+.yt-learn-vocab-empty p,
+.yt-learn-vocab-complete p {
+  color: #94a3b8;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.yt-learn-vocab-empty-icon {
+  font-size: 28px;
+}
+
+.yt-learn-vocab-complete .yt-learn-btn {
+  margin-top: 8px;
+}
+
+.yt-learn-vocab-card .yt-learn-card-body {
+  padding: 20px;
+}
+
+.yt-learn-vocab-card .yt-learn-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  border-top: 1px solid rgba(148, 163, 184, .15);
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.yt-learn-vocab-study .yt-learn-timestamp-btn {
+  margin-top: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, .12);
+  border: 1px solid rgba(56, 189, 248, .3);
+  color: #7dd3fc;
+  cursor: pointer;
+}
 
 @media (max-width: 600px) {
-  .yt-learn-overlay-backdrop.yt-learn-vocab-backdrop { top:12px; right:8px; width:calc(100vw - 16px); max-width:none; }
-  .yt-learn-vocab-actions { flex-direction:column-reverse; }
-  .yt-learn-vocab-actions button { width:100%; }
-  .yt-learn-vocab-card .yt-learn-card-body { padding:14px; }
-  .yt-learn-vocab-card .yt-learn-card-footer { font-size:10px; }
+  .yt-learn-overlay-backdrop.yt-learn-vocab-backdrop {
+    top: 12px;
+    right: 8px;
+    width: calc(100vw - 16px);
+    max-width: none;
+  }
+
+  .yt-learn-vocab-actions {
+    flex-direction: column-reverse;
+  }
+
+  .yt-learn-vocab-actions button {
+    width: 100%;
+  }
+
+  .yt-learn-vocab-card .yt-learn-card-body {
+    padding: 14px;
+  }
+
+  .yt-learn-vocab-card .yt-learn-card-footer {
+    font-size: 10px;
+  }
 }

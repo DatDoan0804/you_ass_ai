@@ -2762,10 +2762,11 @@ berlin and more than any other city i've
       ui.vocabularyPrepGate = true;
       ui.setVocabularyStatus('error', 'Gemini request failed. Add your key or continue.');
       ui.showVocabularyDrawer();
-      assert.ok(ui.rootContainer.child.innerHTML.includes('Couldn’t prepare the word cards'));
-      assert.ok(ui.rootContainer.child.innerHTML.includes('Gemini request failed'));
-      assert.ok(ui.rootContainer.child.innerHTML.includes('Start watching'));
-      assert.ok(!ui.rootContainer.child.innerHTML.includes('Ready for the video.'));
+      const container = ui.rootContainer.child || ui.rootContainer;
+      assert.ok(container.innerHTML.includes('Couldn’t prepare the word cards'));
+      assert.ok(container.innerHTML.includes('Gemini request failed'));
+      assert.ok(container.innerHTML.includes('Start watching'));
+      assert.ok(!container.innerHTML.includes('Ready for the video.'));
     } finally {
       globalThis.document = originalDocument;
     }

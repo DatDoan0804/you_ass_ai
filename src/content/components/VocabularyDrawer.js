@@ -19,10 +19,10 @@ export function VocabularyDrawer({
   state = 'ready',
   message = '',
   isGate = false,
-  onClose = () => {},
-  onRetry = () => {},
-  onContinue = () => {},
-  onSeekToTimestamp = () => {}
+  onClose = () => { },
+  onRetry = () => { },
+  onContinue = () => { },
+  onSeekToTimestamp = () => { }
 }) {
   const [currentIndex, setCurrentIndex] = useSafeState(0);
 
@@ -60,6 +60,8 @@ export function VocabularyDrawer({
     if (totalWords <= 1) return;
 
     const handleKeyDown = (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+
       // Don't intercept if user is typing in an input/textarea/select or contenteditable
       if (
         e.target &&
@@ -68,18 +70,25 @@ export function VocabularyDrawer({
         return;
       }
 
+      // Focus the card only for a navigation key, then keep the key from reaching YouTube.
+      const cardEl = document.querySelector('.yt-learn-vocab-card');
+      if (cardEl && !cardEl.contains(document.activeElement)) {
+        cardEl.focus({ preventScroll: true });
+      }
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
       if (e.key === 'ArrowLeft') {
-        e.preventDefault();
         setCurrentIndex((prev) => Math.max(0, prev - 1));
       } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
         setCurrentIndex((prev) => Math.min(totalWords - 1, prev + 1));
       }
     };
 
     if (typeof window !== 'undefined') {
-      window.addEventListener('keydown', handleKeyDown);
-      return () => window.removeEventListener('keydown', handleKeyDown);
+      window.addEventListener('keydown', handleKeyDown, true);
+      return () => window.removeEventListener('keydown', handleKeyDown, true);
     }
   }, [totalWords]);
 
@@ -122,9 +131,9 @@ export function VocabularyDrawer({
             type="button"
             style="margin-top:14px;"
             onClick=${(e) => {
-              if (e && e.stopPropagation) e.stopPropagation();
-              onRetry();
-            }}
+          if (e && e.stopPropagation) e.stopPropagation();
+          onRetry();
+        }}
           >
             Try again
           </button>
@@ -142,9 +151,9 @@ export function VocabularyDrawer({
             type="button"
             style="margin-top:14px;"
             onClick=${(e) => {
-              if (e && e.stopPropagation) e.stopPropagation();
-              onRetry();
-            }}
+          if (e && e.stopPropagation) e.stopPropagation();
+          onRetry();
+        }}
           >
             Try again
           </button>
@@ -162,9 +171,9 @@ export function VocabularyDrawer({
             type="button"
             style="margin-top:14px;"
             onClick=${(e) => {
-              if (e && e.stopPropagation) e.stopPropagation();
-              onRetry();
-            }}
+          if (e && e.stopPropagation) e.stopPropagation();
+          onRetry();
+        }}
           >
             Try again
           </button>
@@ -191,36 +200,36 @@ export function VocabularyDrawer({
           <div class="yt-learn-vocab-card-word">${currentWord.word}</div>
 
           ${meaning
-            ? html`
+        ? html`
                 <div class="yt-learn-vocab-answer">
                   <div class="yt-learn-vocab-meaning">${meaning}</div>
                   ${currentWord.contextualMeaning
-                    ? html`<div class="yt-learn-vocab-context-meaning">
+            ? html`<div class="yt-learn-vocab-context-meaning">
                         <strong>Context: </strong>${currentWord.contextualMeaning}
                       </div>`
-                    : ''}
+            : ''}
                   ${currentWord.example
-                    ? html`<blockquote>"${currentWord.example}"</blockquote>`
-                    : ''}
+            ? html`<blockquote>"${currentWord.example}"</blockquote>`
+            : ''}
                 </div>
               `
-            : ''}
+        : ''}
 
           ${currentWord.timestamp !== null && !isNaN(currentWord.timestamp)
-            ? html`
+        ? html`
                 <button
                   class="yt-learn-btn yt-learn-btn-secondary yt-learn-timestamp-btn"
                   data-time=${currentWord.timestamp}
                   title="Jump to ${formatTimestamp(currentWord.timestamp)} in video"
                   onClick=${(e) => {
-                    if (e && e.stopPropagation) e.stopPropagation();
-                    onSeekToTimestamp(currentWord.timestamp);
-                  }}
+            if (e && e.stopPropagation) e.stopPropagation();
+            onSeekToTimestamp(currentWord.timestamp);
+          }}
                 >
                   ⏱️ ${formatTimestamp(currentWord.timestamp)}
                 </button>
               `
-            : ''}
+        : ''}
         </div>
 
         <div class="yt-learn-vocab-actions">
@@ -259,6 +268,7 @@ export function VocabularyDrawer({
     >
       <div
         class="yt-learn-card yt-learn-vocab-card"
+        tabindex="-1"
         onClick=${(e) => e && e.stopPropagation && e.stopPropagation()}
       >
         <div class="yt-learn-card-header">
@@ -267,20 +277,20 @@ export function VocabularyDrawer({
             <h3 class="yt-learn-card-title">Pre-Video Vocabulary</h3>
           </div>
           ${!isGate
-            ? html`
+      ? html`
                 <button
                   class="yt-learn-btn yt-learn-btn-ghost"
                   id="yt-learn-vocab-close"
                   aria-label="Close"
                   onClick=${(e) => {
-                    if (e && e.stopPropagation) e.stopPropagation();
-                    onClose();
-                  }}
+          if (e && e.stopPropagation) e.stopPropagation();
+          onClose();
+        }}
                 >
                   ✕
                 </button>
               `
-            : ''}
+      : ''}
         </div>
 
         <div class="yt-learn-card-body">
@@ -294,9 +304,9 @@ export function VocabularyDrawer({
             id="yt-learn-vocab-continue"
             type="button"
             onClick=${(e) => {
-              if (e && e.stopPropagation) e.stopPropagation();
-              onContinue();
-            }}
+      if (e && e.stopPropagation) e.stopPropagation();
+      onContinue();
+    }}
           >
             ${continueButtonText}
           </button>
