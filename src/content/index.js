@@ -33,6 +33,7 @@ import { BreakpointDetector } from './breakpoint-detector.js';
 import { VideoController } from './video-controller.js';
 import { UIManager } from './ui-manager.js';
 import { TemplateLoader } from './template-loader.js';
+import { ShortcutManager } from './shortcut-manager.js';
 
 const runtimeApi =
   typeof browser !== 'undefined' && browser.runtime
@@ -362,9 +363,12 @@ export class YouTubeLearningAssistantApp {
         }
       }
     });
+
+    this.shortcutManager = new ShortcutManager(this);
   }
 
   async start() {
+    this.shortcutManager.init();
     await db.init();
     await TemplateLoader.preloadAll();
     this.settings = await Database.getSettings();

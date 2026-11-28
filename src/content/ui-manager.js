@@ -1396,6 +1396,11 @@ export class UIManager {
     if (this.rootContainer) {
       mountComponent(null, this.rootContainer);
     }
+    const player =
+      document.getElementById('movie_player') ||
+      document.querySelector('video.html5-main-video') ||
+      document.querySelector('video');
+    player?.focus?.({ preventScroll: true });
   }
 
   updateSettings(newSettings = {}) {
@@ -1802,5 +1807,28 @@ export class UIManager {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * Toggles the dedicated bar between collapsed pill and expanded panel
+   */
+  toggleBar() {
+    this.barCollapsed = !this.barCollapsed;
+    this.renderDedicatedBar();
+  }
+  /**
+   * Toggles the vocabulary drawer overlay
+   */
+  toggleVocabularyDrawer() {
+    if (this.activePanel === 'vocabulary') {
+      if (!this.vocabularyPrepGate) {
+        this.closeOverlay();
+      }
+    } else {
+      if (typeof this.callbacks.onOpenVocabulary === 'function') {
+        this.callbacks.onOpenVocabulary();
+      }
+      this.showVocabularyDrawer();
+    }
   }
 }
